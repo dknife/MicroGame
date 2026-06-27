@@ -25,6 +25,7 @@ const GEM_REST_Y = WALL_T + 0.18;     // 보석이 상자 바닥에 놓인 높�
 const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지 떠오름
 
 let scene, camera, renderer, raycaster;
+let dirLight; // 공전하며 금속 표면에 반짝임을 만드는 기본 방향광
 let boardGroup;          // 모든 박스를 담는 그룹 (회전/흔들림 적용)
 let boxes = [];          // [r][c] -> 박스 정보 객체
 let size = 0;
@@ -81,18 +82,18 @@ export function initRenderer(host, cbs) {
 
   // 조명
   scene.add(new THREE.HemisphereLight(0xffffff, 0x55607a, 0.85));
-  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
-  dir.position.set(6, 12, 8);
-  dir.castShadow = true;
-  dir.shadow.mapSize.set(2048, 2048);
-  dir.shadow.camera.near = 1;
-  dir.shadow.camera.far = 60;
+  dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
+  dirLight.position.set(6, 12, 8);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.set(2048, 2048);
+  dirLight.shadow.camera.near = 1;
+  dirLight.shadow.camera.far = 60;
   const d = 14;
-  dir.shadow.camera.left = -d;
-  dir.shadow.camera.right = d;
-  dir.shadow.camera.top = d;
-  dir.shadow.camera.bottom = -d;
-  scene.add(dir);
+  dirLight.shadow.camera.left = -d;
+  dirLight.shadow.camera.right = d;
+  dirLight.shadow.camera.top = d;
+  dirLight.shadow.camera.bottom = -d;
+  scene.add(dirLight);
 
   boardGroup = new THREE.Group();
   scene.add(boardGroup);
@@ -746,6 +747,13 @@ function bindPointer() {
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
+
+  // 기본 조명을 공전 + 미세 맥동 → 금속 표면 하이라이트가 움직이며 반짝인다
+  if (dirLight) {
+    const a = clock.elapsedTime * 0.55;
+    dirLight.position.set(Math.cos(a) * 9, 12, Math.sin(a) * 9);
+    dirLight.intensity = 1.05 + 0.3 * Math.sin(clock.elapsedTime * 1.7);
+  }
 
   // 뚜껑: 90도까지 열고 → 뒤로 눕혀 바닥에 놓기 (열기 1.5s / 닫기 0.8s)
   for (const row of boxes) for (const b of row) {
