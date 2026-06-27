@@ -1,5 +1,7 @@
 'use strict';
 
+import { initRenderer, buildBoard as r3dBuild, syncState, shake as r3dShake } from './render3d.js';
+
 const MIN_SIZE = 5;
 const MAX_SIZE = 12;
 const SAVE_KEY = 'myMeowDoku.save';
@@ -313,6 +315,7 @@ function getAudio() {
 // 클릭 처리(setTimeout)는 제스처 컨텍스트가 아니므로 첫 입력에서 미리 풀어둔다.
 document.addEventListener('mousedown', getAudio, { once: true });
 document.addEventListener('touchstart', getAudio, { once: true });
+document.addEventListener('pointerdown', getAudio, { once: true });
 
 // 뽁 — 물방울 터지는 소리 (마킹: 높은 음, 해제: 낮은 음, 피치 약간 랜덤)
 function playPop(erase) {
@@ -447,12 +450,6 @@ function startDrag(r, c) {
   };
 }
 
-function onCellDown(r, c, e) {
-  if (e.button !== 0) return;
-  e.preventDefault(); // 네이티브 드래그/텍스트 선택 방지
-  startDrag(r, c);
-}
-
 function onCellEnter(r, c) {
   if (!drag || locked) return;
   if (!drag.moved) {
@@ -475,50 +472,14 @@ function applyDragMark(r, c) {
   }
 }
 
-document.addEventListener('mouseup', () => {
+// 포인터를 뗄 때: 드래그로 처리됐다면 곧이어 오는 tap(click)을 무시한다.
+// (렌더러가 onUp 직후 onTap을 호출하므로 suppressClick 동기 설정이 유효)
+function handlePointerUp() {
   if (drag && drag.moved) {
-    // 드래그로 처리됐으므로 곧이어 오는 click은 무시
     suppressClick = true;
     setTimeout(() => { suppressClick = false; }, 0);
   }
   drag = null;
-});
-
-// ----- 터치 드래그: 손가락 아래의 카드를 찾아 마우스 드래그와 동일하게 처리 -----
-
-boardEl.addEventListener('touchstart', (e) => {
-  const card = e.target.closest('.card');
-  if (!card) return;
-  startDrag(+card.dataset.r, +card.dataset.c);
-});
-
-boardEl.addEventListener('touchmove', (e) => {
-  if (!drag || locked) return;
-  const t = e.touches[0];
-  const el = document.elementFromPoint(t.clientX, t.clientY);
-  const card = el && el.closest('.card');
-  if (!card) return;
-  const r = +card.dataset.r, c = +card.dataset.c;
-  // 시작 카드 안에서의 미세한 움직임은 드래그로 보지 않는다 (탭/더블탭 보존)
-  if (!drag.moved && r === drag.startR && c === drag.startC) return;
-  onCellEnter(r, c);
-}, { passive: true });
-
-function endTouch() {
-  if (drag && drag.moved) {
-    suppressClick = true;
-    // 터치의 합성 click은 touchend보다 늦게 올 수 있어 여유를 둔다
-    setTimeout(() => { suppressClick = false; }, 350);
-  }
-  drag = null;
-}
-document.addEventListener('touchend', endTouch);
-document.addEventListener('touchcancel', endTouch);
-
-function onCellDblClick(r, c) {
-  clearTimeout(clickTimer);
-  clickTimer = null;
-  doubleClick(r, c);
 }
 
 function singleClick(r, c) {
@@ -573,9 +534,8 @@ function onMistake(r, c) {
   flashing = { r, c };
   playWarning();
   render();
-  boardEl.classList.add('shake');
+  r3dShake();
   setTimeout(() => {
-    boardEl.classList.remove('shake');
     flashing = null;
     cells[r][c].mark = 'wrong';
     locked = false;
@@ -603,69 +563,18 @@ bannerBtnEl.addEventListener('click', () => {
 
 // ---------- 렌더링 ----------
 
-// 보드 DOM은 판이 바뀔 때 한 번만 만들고, 상태 변화는 제자리 갱신한다.
-// 전체 재생성(innerHTML='')은 touchstart 대상 요소를 제거해
-// 진행 중인 터치 드래그의 이벤트 스트림을 끊어버리므로 금지.
-let cellEls = []; // 2D [r][c] -> 카드 요소
-
+// 렌더링은 3D 렌더러(render3d.js)에 위임한다.
+// buildBoard는 판이 바뀔 때 박스 씬을 새로 만들고, render는 HUD 갱신 후
+// 셀 상태를 렌더러에 넘겨 제자리로 동기화한다.
 function buildBoard() {
-  boardEl.style.gridTemplateColumns = `repeat(${size}, 1fr)`;
-  boardEl.style.gridTemplateRows = `repeat(${size}, 1fr)`;
-  boardEl.innerHTML = '';
-  cellEls = [];
-  for (let r = 0; r < size; r++) {
-    cellEls.push([]);
-    for (let c = 0; c < size; c++) {
-      const el = document.createElement('div');
-      el.className = 'card';
-      el.dataset.r = r;
-      el.dataset.c = c;
-
-      // 다른 색 영역과 맞닿은 변에 굵은 경계선 (판이 같는 동안 불변)
-      const reg = board.regions[r][c];
-      if (r === 0 || board.regions[r - 1][c] !== reg) el.classList.add('bt');
-      if (r === size - 1 || board.regions[r + 1][c] !== reg) el.classList.add('bb');
-      if (c === 0 || board.regions[r][c - 1] !== reg) el.classList.add('bl');
-      if (c === size - 1 || board.regions[r][c + 1] !== reg) el.classList.add('br');
-
-      el.addEventListener('click', () => onCellClick(r, c));
-      el.addEventListener('dblclick', () => onCellDblClick(r, c));
-      el.addEventListener('mousedown', (e) => onCellDown(r, c, e));
-      el.addEventListener('mouseenter', () => onCellEnter(r, c));
-      cellEls[r].push(el);
-      boardEl.appendChild(el);
-    }
-  }
+  r3dBuild(size, board);
 }
 
 function render() {
   levelEl.textContent = `Level ${level} (${size}×${size})`;
   livesEl.textContent =
     '❤️'.repeat(MAX_MISTAKES - mistakes) + '🖤'.repeat(mistakes);
-
-  for (let r = 0; r < size; r++) {
-    for (let c = 0; c < size; c++) {
-      const cell = cells[r][c];
-      const el = cellEls[r][c];
-      const reg = board.regions[r][c];
-      const isFlash = flashing && flashing.r === r && flashing.c === c;
-
-      el.classList.toggle('revealed', cell.revealed || isFlash);
-      el.classList.toggle('flash-stone', isFlash);
-      el.classList.toggle('wrong', !cell.revealed && !isFlash && cell.mark === 'wrong');
-
-      if (cell.revealed) {
-        el.style.backgroundColor = REGION_COLORS[reg]; // 고양이 배경 = 카드 뒷면 색
-        el.textContent = CAT_FACES[reg];
-      } else if (isFlash) {
-        el.style.backgroundColor = ''; // .flash-stone의 회색 배경 사용
-        el.textContent = '🪨';
-      } else {
-        el.style.backgroundColor = REGION_COLORS[reg];
-        el.textContent = cell.mark === 'paw' ? '🐾' : cell.mark === 'wrong' ? '✕' : '';
-      }
-    }
-  }
+  syncState({ size, board, cells, flashing });
 }
 
 function showOverlay(title, message, btnLabel, onClick) {
@@ -734,5 +643,15 @@ function startGame() {
   }
   newBoard();
 }
+
+// ---------- 3D 렌더러 초기화 + 입력 연결 ----------
+// 박스 위 드래그 = 마킹, 빈 공간/우클릭 드래그 = 그리드 회전.
+// 렌더러는 포인터 제스처를 (r,c)로 변환해 기존 핸들러를 그대로 호출한다.
+initRenderer(boardEl, {
+  onDown: (r, c) => startDrag(r, c),
+  onEnter: (r, c) => onCellEnter(r, c),
+  onUp: handlePointerUp,
+  onTap: (r, c) => onCellClick(r, c),
+});
 
 startGame();

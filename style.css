@@ -88,55 +88,20 @@ main {
 }
 
 #board {
-  /* 보드 위 터치는 스크롤/줌 대신 드래그 마킹으로 사용 */
+  /* WebGL 캔버스 컨테이너 — 터치는 스크롤/줌 대신 드래그/회전으로 사용 */
   touch-action: none;
-  display: grid;
-  gap: 2px;
-  background: #1a1b2e;
-  padding: 6px;
-  border-radius: 10px;
-  width: min(90vw, 560px);
+  background: radial-gradient(circle at 50% 30%, #3a3d5c 0%, #1a1b2e 75%);
+  border-radius: 14px;
+  width: min(92vw, 640px);
   aspect-ratio: 1;
-}
-
-.card {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* 내용(이모지) 유무가 트랙 크기에 영향을 주지 않도록 최소 크기 고정 */
-  min-width: 0;
-  min-height: 0;
   overflow: hidden;
-  line-height: 1;
-  font-size: clamp(0.9rem, 4vw, 1.6rem);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: filter 0.1s;
-  border: 0 solid #1a1b2e;
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.35);
 }
 
-.card:hover {
-  filter: brightness(1.15);
-}
-
-/* 색 영역 경계선 */
-.card.bt { border-top-width: 3px; }
-.card.bb { border-bottom-width: 3px; }
-.card.bl { border-left-width: 3px; }
-.card.br { border-right-width: 3px; }
-
-.card.revealed {
-  cursor: default;
-}
-
-.card.flash-stone {
-  background: #d8d8d8;
-}
-
-.card.wrong {
-  color: #d90429;
-  font-weight: 900;
-  text-shadow: 0 0 4px rgba(217, 4, 41, 0.5);
+#board canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* 조작 설명 박스 */
