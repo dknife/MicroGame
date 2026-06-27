@@ -634,8 +634,13 @@ function pickCell() {
 }
 
 function bindPointer() {
+  // 드래그 시 페이지 텍스트/요소 선택·콜아웃 방지
+  canvas.addEventListener('selectstart', (e) => e.preventDefault());
+  canvas.addEventListener('dragstart', (e) => e.preventDefault());
+
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 && e.button !== 2) return;
+    e.preventDefault(); // 텍스트/요소 선택 시작 방지
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
