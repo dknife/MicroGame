@@ -20,7 +20,8 @@ const BOX = 0.86;        // 박스 한 변
 const BASE_H = 0.55;     // 박스 몸통 높이
 const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
-const OPEN_ANGLE = Math.PI / 2; // 뚜껑 열림 각도 — 박스 옆에 수직으로 세움
+// 뚜껑 열림 각도 — 뒤로 넘어가 박스 뒤쪽으로 거의 수직 아래로 내려가 위에서 안 보이게
+const OPEN_ANGLE = Math.PI * 1.45;
 const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
 const GEM_REST_Y = WALL_T + 0.18;     // 보석이 상자 바닥에 놓인 높이(1.5배 크기 기준)
 const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지 떠오름
@@ -56,7 +57,11 @@ const lidTweens = new Map();   // boxKey -> 뚜껑 회전 트윈
 const sinkTweens = new Map();  // boxKey -> 박스 가라앉기 트윈
 const riseTweens = new Map();  // boxKey -> 보석 떠오르기 트윈
 const emitters = [];           // 오답 박스의 지속 연기 방출기 [{ b, acc }]
+const clothFades = [];         // 벗겨지는 중인 보자기 [{ b, t }]
 const smokes = [];             // 활성 연기 파티클 그룹
+
+// 보자기(천) 색 — 영역과 무관한 중립 패브릭 (색 단서가 새지 않도록)
+const CLOTH_COLORS = ['#6d6a75', '#7a6f63', '#5f6b6e', '#736a78', '#6b5d52', '#566066'];
 let shakeTime = 0;             // 남은 흔들림 시간
 const clock = new THREE.Clock();
 
@@ -146,6 +151,8 @@ export function buildBoard(n, board) {
   sinkTweens.clear();
   riseTweens.clear();
   emitters.length = 0;
+  clothFades.length = 0;
+  const covered = board.covered || [];
   for (const g of smokes) boardGroup.remove(g.group);
   smokes.length = 0;
 
@@ -281,10 +288,49 @@ export function buildBoard(n, board) {
       gem.visible = false;
       group.add(gem);
 
+      // 보자기(천) — 색을 가려 영역 단서를 숨긴다. 공개되면 벗겨진다.
+      const isCovered = !!(covered[r] && covered[r][c]);
+      const pickParts = [lid, floor, wallBack, wallFront, wallRight, wallLeft];
+      let cloth = null, clothMats = null, clothPick = null;
+      if (isCovered) {
+        cloth = new THREE.Group();
+        const ch = BASE_H + LID_H;
+        const clothColor = CLOTH_COLORS[(r * 7 + c * 3) % CLOTH_COLORS.length];
+        const clothMat = new THREE.MeshStandardMaterial({
+          color: clothColor, roughness: 0.95, metalness: 0.0,
+          normalMap: metalNormalTexture(), normalScale: new THREE.Vector2(0.35, 0.35),
+          transparent: true,
+        });
+        const clothMesh = new THREE.Mesh(new THREE.BoxGeometry(BOX + 0.08, ch, BOX + 0.08), clothMat);
+        clothMesh.position.y = ch / 2 + 0.02;
+        clothMesh.castShadow = true;
+        clothMesh.receiveShadow = true;
+        clothMesh.userData = ud;
+        cloth.add(clothMesh);
+        const knotMat = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(clothColor).multiplyScalar(0.75), roughness: 0.9, transparent: true,
+        });
+        const knot = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), knotMat);
+        knot.position.y = ch + 0.06;
+        knot.userData = ud;
+        cloth.add(knot);
+        // 천 위 마킹 면 (보석 박스와 같은 markTex 공유)
+        const cmpMat = new THREE.MeshBasicMaterial({ map: markTex, transparent: true });
+        const cmp = new THREE.Mesh(new THREE.PlaneGeometry(BOX * 0.68, BOX * 0.68), cmpMat);
+        cmp.rotation.x = -Math.PI / 2;
+        cmp.position.y = ch + 0.045;
+        cloth.add(cmp);
+        group.add(cloth);
+        pickParts.push(clothMesh, knot);
+        clothMats = [clothMat, knotMat, cmpMat];
+        clothPick = [clothMesh, knot];
+      }
+
       boardGroup.add(group);
       boxes[r].push({
         group, lidPivot, lid, gem, gemMat, gemLight, sparkles, wrong: false,
-        pickParts: [lid, floor, wallBack, wallFront, wallRight, wallLeft],
+        cloth, clothMats, clothPick, covered: isCovered, clothOff: false,
+        pickParts,
         markCanvas, markCtx: markCanvas.getContext('2d'), markTex,
         reg, mark: 'none', revealed: false, flashOpen: false,
       });
@@ -313,6 +359,7 @@ export function syncState(state) {
       // 보석 공개 (한 번만): 뚜껑 열고 보석이 뚜껑 높이까지 떠오른다
       if (cell.revealed && !b.revealed) {
         b.revealed = true;
+        removeCloth(b);
         openLid(b);
         b.gem.visible = true;
         b.gem.position.y = GEM_REST_Y;
@@ -323,6 +370,7 @@ export function syncState(state) {
       // 오답 직후 잠깐(flashing): 뚜껑 열고 연기 한 번
       if (isFlash && !b.flashOpen) {
         b.flashOpen = true;
+        removeCloth(b);
         openLid(b);
         spawnSmoke(b);
       } else if (!isFlash && b.flashOpen && !b.revealed && cell.mark !== 'wrong') {
@@ -360,6 +408,14 @@ function openLid(b) {
 }
 function closeLid(b) {
   lidTweens.set(lidKey(b), { obj: b.lidPivot, from: b.lidPivot.rotation.x, to: 0, t: 0, dur: 0.5, ease: easeInOutCubic });
+}
+
+// 보자기를 벗긴다 (공개/오답 시) — 위로 들리며 서서히 사라짐
+function removeCloth(b) {
+  if (!b.cloth || b.clothOff) return;
+  b.clothOff = true;
+  clothFades.push({ b, t: 0 });
+  if (b.clothPick) b.pickParts = b.pickParts.filter((m) => !b.clothPick.includes(m));
 }
 
 // 오답 박스를 눌러 가라앉힌다
@@ -777,6 +833,21 @@ function animate() {
       const sc = 0.05 + 0.13 * o;
       sp.sprite.scale.set(sc, sc, sc);
     }
+  }
+
+  // 벗겨지는 보자기: 위로 들리며 서서히 사라짐
+  for (let i = clothFades.length - 1; i >= 0; i--) {
+    const cf = clothFades[i];
+    cf.t += dt / 0.6;
+    const b = cf.b;
+    if (cf.t >= 1) {
+      b.cloth.visible = false;
+      clothFades.splice(i, 1);
+      continue;
+    }
+    const e = easeOut(cf.t);
+    for (const m of b.clothMats) m.opacity = 1 - e;
+    b.cloth.position.y = e * 0.7;
   }
 
   // 오답 박스: 연기를 주기적으로 계속 뿜는다

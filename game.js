@@ -152,6 +152,54 @@ function findSolutions(n, regions, limit) {
   return found;
 }
 
+// 보자기(covered)로 색이 가려진 칸을 고려한 해 개수 (limit개에서 조기 중단).
+// 플레이어가 색 규칙에서 확실히 쓸 수 있는 건 "보이는 같은 색 2개 금지"뿐이므로,
+// 가려진 칸은 영역 제약 검사에서 제외한다. covered가 전부 false이면 findSolutions와 동치.
+function countSolutionsCovered(n, regions, covered, limit) {
+  const usedCols = new Array(n).fill(false);
+  const usedRegions = new Array(n).fill(false);
+  let found = 0;
+  function place(row, prevCol) {
+    if (row === n) { found++; return; }
+    for (let c = 0; c < n; c++) {
+      if (usedCols[c]) continue;
+      if (row > 0 && Math.abs(c - prevCol) < 2) continue;
+      const k = regions[row][c];
+      const visible = !covered[row][c];
+      if (visible && usedRegions[k]) continue;
+      usedCols[c] = true;
+      if (visible) usedRegions[k] = true;
+      place(row + 1, c);
+      if (visible) usedRegions[k] = false;
+      usedCols[c] = false;
+      if (found >= limit) return;
+    }
+  }
+  place(0, -2);
+  return found;
+}
+
+// 유일해 보드에서 칸을 하나씩 덮어보며, "가려진 색을 모른 채"로도 여전히
+// 유일하게 풀리는 동안만 덮는다(스도쿠 단서 빼기와 동일). → 색을 가려도 논리로 풀림 보장.
+function computeCovering(n, diamondCols, regions) {
+  const covered = Array.from({ length: n }, () => Array(n).fill(false));
+  const cap = Math.round(n * n * 0.35); // 난이도 상한 (덮는 칸 수)
+  let count = 0;
+  const cells = shuffle(
+    [...Array(n * n).keys()].map((i) => [Math.floor(i / n), i % n])
+  );
+  for (const [r, c] of cells) {
+    if (count >= cap) break;
+    covered[r][c] = true;
+    if (countSolutionsCovered(n, regions, covered, 2) === 1) {
+      count++;
+    } else {
+      covered[r][c] = false; // 유일해가 깨지면 덮지 않음
+    }
+  }
+  return covered;
+}
+
 // 영역 k에서 (rm, cm)을 떼어내도 k가 연결 상태를 유지하는지 (시드 = k의 다이아몬드 칸)
 function connectedWithout(n, regions, k, rm, cm, diamondCols) {
   let total = 0;
@@ -229,7 +277,10 @@ function createBoardJob(n) {
     const sols = findSolutions(n, regions, 2);
     if (sols.length === 1) {
       if (smallRegionCount(n, regions) >= 2) {
-        const board = { diamondCols, regions };
+        const board = {
+          diamondCols, regions,
+          covered: computeCovering(n, diamondCols, regions),
+        };
         regions = null;
         return board;
       }
@@ -277,7 +328,11 @@ function prepareNextBoard() {
 
 function newBoard() {
   if (nextBoard && nextBoard.size === size) {
-    board = { diamondCols: nextBoard.diamondCols, regions: nextBoard.regions };
+    board = {
+      diamondCols: nextBoard.diamondCols,
+      regions: nextBoard.regions,
+      covered: nextBoard.covered,
+    };
   } else {
     board = makeBoard(size); // 미리 만든 보드가 없으면 동기 생성
   }
@@ -606,6 +661,7 @@ function saveProgress() {
       level,
       diamondCols: board.diamondCols,
       regions: board.regions,
+      covered: board.covered,
     }));
   } catch (e) { /* 저장 불가 환경(시크릿 모드 등)이면 무시 */ }
 }
@@ -630,7 +686,12 @@ function startGame() {
       Array.isArray(saved.regions) && saved.regions.length === size &&
       saved.regions.every((row) => Array.isArray(row) && row.length === size);
     if (validBoard) {
-      board = { diamondCols: saved.diamondCols, regions: saved.regions };
+      const covered =
+        Array.isArray(saved.covered) && saved.covered.length === size &&
+        saved.covered.every((row) => Array.isArray(row) && row.length === size)
+          ? saved.covered
+          : Array.from({ length: size }, () => Array(size).fill(false));
+      board = { diamondCols: saved.diamondCols, regions: saved.regions, covered };
       prepareNextBoard();
       resetRound();
       return;
