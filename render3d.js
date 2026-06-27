@@ -20,7 +20,6 @@ const BOX = 0.86;        // 박스 한 변
 const BASE_H = 0.55;     // 박스 몸통 높이
 const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
-const OPEN_ANGLE = Math.PI / 2; // 뚜껑 열림 각도 — 박스 옆에 수직으로 세움
 const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
 const GEM_REST_Y = WALL_T + 0.18;     // 보석이 상자 바닥에 놓인 높이(1.5배 크기 기준)
 const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지 떠오름
@@ -52,7 +51,6 @@ const LONG_PRESS_MS = 400;
 const MOVE_THRESH2 = 64;     // 회전으로 전환되는 이동 임계값 (px², 8px)
 
 // 애니메이션 대상
-const lidTweens = new Map();   // boxKey -> 뚜껑 회전 트윈
 const sinkTweens = new Map();  // boxKey -> 박스 가라앉기 트윈
 const riseTweens = new Map();  // boxKey -> 보석 떠오르기 트윈
 const emitters = [];           // 오답 박스의 지속 연기 방출기 [{ b, acc }]
@@ -142,7 +140,6 @@ function onResize() {
 export function buildBoard(n, board) {
   size = n;
   boardData = board;
-  lidTweens.clear();
   sinkTweens.clear();
   riseTweens.clear();
   emitters.length = 0;
@@ -284,6 +281,7 @@ export function buildBoard(n, board) {
       boardGroup.add(group);
       boxes[r].push({
         group, lidPivot, lid, gem, gemMat, gemLight, sparkles, wrong: false,
+        lidT: 0, lidOpen: false, // 0=닫힘, 1=완전히 열려 옆에 눕힘
         pickParts: [lid, floor, wallBack, wallFront, wallRight, wallLeft],
         markCanvas, markCtx: markCanvas.getContext('2d'), markTex,
         reg, mark: 'none', revealed: false, flashOpen: false,
@@ -354,12 +352,25 @@ export function shake() {
 
 function lidKey(b) { return b.lid.userData.r + ',' + b.lid.userData.c; }
 
-function openLid(b) {
-  // 천천히 열린다
-  lidTweens.set(lidKey(b), { obj: b.lidPivot, from: b.lidPivot.rotation.x, to: OPEN_ANGLE, t: 0, dur: 1.3, ease: easeInOutCubic });
-}
-function closeLid(b) {
-  lidTweens.set(lidKey(b), { obj: b.lidPivot, from: b.lidPivot.rotation.x, to: 0, t: 0, dur: 0.5, ease: easeInOutCubic });
+function openLid(b) { b.lidOpen = true; }
+function closeLid(b) { b.lidOpen = false; }
+
+// 뚜껑 진행값 lidT(0~1)을 회전/높이로 변환.
+// 1단계: 90도(수직)까지 들어올림. 2단계: 뒤로 넘기며 바닥으로 내려 상자 옆에 눕힘.
+function applyLid(b) {
+  const t = b.lidT;
+  const P = 0.5; // 1단계(열기) 비중
+  let rot, y;
+  if (t <= P) {
+    rot = (Math.PI / 2) * easeOut(t / P); // 0 → 90도
+    y = BASE_H;
+  } else {
+    const e = easeInOutCubic((t - P) / (1 - P));
+    rot = Math.PI / 2 + (Math.PI / 2) * e;     // 90도 → 180도(눕힘)
+    y = BASE_H + (LID_H - BASE_H) * e;          // 경첩을 바닥까지 내림
+  }
+  b.lidPivot.rotation.x = rot;
+  b.lidPivot.position.y = y;
 }
 
 // 오답 박스를 눌러 가라앉힌다
@@ -736,16 +747,13 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  // 뚜껑 트윈
-  for (const [key, tw] of lidTweens) {
-    tw.t += dt / tw.dur;
-    if (tw.t >= 1) {
-      tw.obj.rotation.x = tw.to;
-      lidTweens.delete(key);
-    } else {
-      const e = (tw.ease || easeOut)(tw.t);
-      tw.obj.rotation.x = tw.from + (tw.to - tw.from) * e;
-    }
+  // 뚜껑: 90도까지 열고 → 뒤로 눕혀 바닥에 놓기 (열기 1.5s / 닫기 0.8s)
+  for (const row of boxes) for (const b of row) {
+    const target = b.lidOpen ? 1 : 0;
+    if (b.lidT === target) continue;
+    if (target > b.lidT) b.lidT = Math.min(1, b.lidT + dt / 1.5);
+    else b.lidT = Math.max(0, b.lidT - dt / 0.8);
+    applyLid(b);
   }
 
   // 박스 가라앉기(오답) / 보석 떠오르기 트윈 — 둘 다 position.y
