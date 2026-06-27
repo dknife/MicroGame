@@ -241,9 +241,9 @@ export function buildBoard(n, board) {
       const gemMat = new THREE.MeshPhysicalMaterial({
         color: color.clone().lerp(new THREE.Color(0xffffff), 0.65),
         metalness: 0.0, roughness: 0.0,
-        transmission: 1.0, thickness: 0.25, ior: 1.5, // 더 맑고 투명한 유리
-        specularIntensity: 1.0, envMapIntensity: 1.3,
-        transparent: true, opacity: 0.3,              // 투명도 더 높임
+        transmission: 1.0, thickness: 0.6, ior: 2.6,  // 굴절 더 강하게
+        specularIntensity: 1.0, envMapIntensity: 1.6,
+        transparent: true, opacity: 0.3,              // 투명도 유지
         emissive: color.clone().multiplyScalar(0.2),
         emissiveIntensity: 0.3,
         flatShading: true,
@@ -254,6 +254,16 @@ export function buildBoard(n, board) {
       const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.16, 0.09, 8), gemMat);
       crown.position.y = 0.12 + 0.045; // 거들 위에 얹기
       gem.add(crown);
+      // 흰색 에지 — 보석 외곽선/면 모서리를 또렷하게
+      const edgeMat = new THREE.LineBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false,
+      });
+      const pavEdges = new THREE.LineSegments(new THREE.EdgesGeometry(pavilion.geometry), edgeMat);
+      pavEdges.rotation.x = Math.PI;
+      gem.add(pavEdges);
+      const crownEdges = new THREE.LineSegments(new THREE.EdgesGeometry(crown.geometry), edgeMat);
+      crownEdges.position.y = crown.position.y;
+      gem.add(crownEdges);
       // 보석이 실제로 빛을 내도록 점광원 — 열리면(gem.visible) 함께 켜진다
       const gemLight = new THREE.PointLight(
         color.clone().lerp(new THREE.Color(0xffffff), 0.4), 0, 2.6, 2
