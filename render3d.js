@@ -21,7 +21,7 @@ const BASE_H = 0.55;     // 박스 몸통 높이
 const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
 const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
-const GEM_REST_Y = WALL_T + 0.18;     // 보석이 상자 바닥에 놓인 높이(1.5배 크기 기준)
+const GEM_REST_Y = WALL_T + 0.24;     // 보석이 상자 바닥에 놓인 높이(2배 크기 기준)
 const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지 떠오름
 
 let scene, camera, renderer, raycaster;
@@ -239,13 +239,13 @@ export function buildBoard(n, board) {
       // 다이아몬드 (열리면 상자 안에서 드러남) — 크라운(윗부분) + 파빌리온(아랫부분)
       const gem = new THREE.Group();
       const gemMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().lerp(new THREE.Color(0xffffff), 0.5),
+        color: color.clone().lerp(new THREE.Color(0xffffff), 0.65),
         metalness: 0.0, roughness: 0.0,
-        transmission: 1.0, thickness: 0.6, ior: 2.2, // 굴절 유리(다이아몬드급 ior)
+        transmission: 1.0, thickness: 0.25, ior: 1.5, // 더 맑고 투명한 유리
         specularIntensity: 1.0, envMapIntensity: 1.3,
-        transparent: true,
-        emissive: color.clone().multiplyScalar(0.25),
-        emissiveIntensity: 0.45,
+        transparent: true, opacity: 0.3,              // 투명도 더 높임
+        emissive: color.clone().multiplyScalar(0.2),
+        emissiveIntensity: 0.3,
         flatShading: true,
       });
       const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.24, 8), gemMat);
@@ -260,21 +260,22 @@ export function buildBoard(n, board) {
       );
       gemLight.position.set(0, 0.2, 0);
       gem.add(gemLight);
-      // 반짝이 스파클 (반짝반짝 빛남) — 보석에 붙어 깜빡인다
+      // 반짝이 스파클 (반짝반짝 빛남) — 박스 색으로, 더 크게·더 자주 깜빡인다
       const sparkles = [];
-      for (let i = 0; i < 3; i++) {
+      const SPARKLE_N = 6;
+      for (let i = 0; i < SPARKLE_N; i++) {
         const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-          map: starTexture(), color: 0xffffff, transparent: true, opacity: 0,
+          map: starTexture(), color: color.clone(), transparent: true, opacity: 0,
           blending: THREE.AdditiveBlending, depthWrite: false,
         }));
-        const ang = (i / 3) * Math.PI * 2 + Math.random();
-        const rad = 0.07 + Math.random() * 0.12;
-        sp.position.set(Math.cos(ang) * rad, 0.1 + Math.random() * 0.16, Math.sin(ang) * rad);
-        sp.scale.set(0.08, 0.08, 0.08);
+        const ang = (i / SPARKLE_N) * Math.PI * 2 + Math.random();
+        const rad = 0.1 + Math.random() * 0.18;
+        sp.position.set(Math.cos(ang) * rad, 0.05 + Math.random() * 0.28, Math.sin(ang) * rad);
+        sp.scale.setScalar(0.12);
         gem.add(sp);
-        sparkles.push({ sprite: sp, phase: Math.random() * Math.PI * 2, speed: 4 + Math.random() * 4 });
+        sparkles.push({ sprite: sp, phase: Math.random() * Math.PI * 2, speed: 7 + Math.random() * 6 });
       }
-      gem.scale.setScalar(1.5); // 보석 1.5배
+      gem.scale.setScalar(2.0); // 보석 더 크게
       gem.position.set(0, GEM_REST_Y, 0); // 처음엔 상자 바닥에
       gem.visible = false;
       group.add(gem);
@@ -794,8 +795,8 @@ function animate() {
     for (const sp of b.sparkles) {
       const tw = Math.sin(time * sp.speed + sp.phase);
       const o = Math.max(0, tw);
-      sp.sprite.material.opacity = o * o;
-      const sc = 0.05 + 0.13 * o;
+      sp.sprite.material.opacity = o;
+      const sc = 0.1 + 0.32 * o;
       sp.sprite.scale.set(sc, sc, sc);
     }
   }
