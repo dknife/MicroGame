@@ -22,7 +22,7 @@ const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
 const OPEN_ANGLE = Math.PI / 2; // 뚜껑 열림 각도 — 박스 옆에 수직으로 세움
 const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
-const GEM_REST_Y = WALL_T + 0.12;     // 보석이 상자 바닥에 놓인 높이
+const GEM_REST_Y = WALL_T + 0.18;     // 보석이 상자 바닥에 놓인 높이(1.5배 크기 기준)
 const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지 떠오름
 
 let scene, camera, renderer, raycaster;
@@ -72,6 +72,8 @@ export function initRenderer(host, cbs) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; // PBR 금속/유리 룩
+  renderer.toneMappingExposure = 1.1;
   container.appendChild(renderer.domElement);
   canvas = renderer.domElement;
   canvas.style.touchAction = 'none'; // 터치 드래그가 스크롤 대신 입력이 되도록
@@ -106,6 +108,8 @@ export function initRenderer(host, cbs) {
   ground.position.y = -0.001;
   ground.receiveShadow = true;
   scene.add(ground);
+
+  buildEnvironment(); // 금속/유리 반사·굴절용 환경맵
 
   raycaster = new THREE.Raycaster();
 
@@ -178,11 +182,16 @@ export function buildBoard(n, board) {
       const group = new THREE.Group();
       group.position.set(cx, 0, cz);
 
-      // 몸통 — 속이 빈 상자 (바닥 + 네 벽)
+      // 몸통 — 속이 빈 상자 (바닥 + 네 벽), 스크래치 메탈
       const ud = { r, c };
-      const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05 });
+      const scr = scratchTexture();
+      const bodyMat = new THREE.MeshStandardMaterial({
+        color, metalness: 0.95, roughness: 0.45,
+        roughnessMap: scr, bumpMap: scr, bumpScale: 0.015, envMapIntensity: 1.0,
+      });
       const wallMat = new THREE.MeshStandardMaterial({
-        color: color.clone().multiplyScalar(0.92), roughness: 0.6, metalness: 0.05,
+        color: color.clone().multiplyScalar(0.9), metalness: 0.95, roughness: 0.5,
+        roughnessMap: scr, bumpMap: scr, bumpScale: 0.015, envMapIntensity: 1.0,
       });
       const mk = (geo, mat, x, y, z) => {
         const m = new THREE.Mesh(geo, mat);
@@ -203,7 +212,8 @@ export function buildBoard(n, board) {
       const lidPivot = new THREE.Group();
       lidPivot.position.set(0, BASE_H, BOX / 2);
       const lidMat = new THREE.MeshStandardMaterial({
-        color: color.clone().multiplyScalar(1.08), roughness: 0.5, metalness: 0.05,
+        color: color.clone().multiplyScalar(1.05), metalness: 0.95, roughness: 0.45,
+        roughnessMap: scr, bumpMap: scr, bumpScale: 0.015, envMapIntensity: 1.0,
       });
       const lid = new THREE.Mesh(lidGeo, lidMat);
       lid.position.set(0, LID_H / 2, -BOX / 2);
@@ -226,13 +236,14 @@ export function buildBoard(n, board) {
 
       // 다이아몬드 (열리면 상자 안에서 드러남) — 크라운(윗부분) + 파빌리온(아랫부분)
       const gem = new THREE.Group();
-      const gemMat = new THREE.MeshStandardMaterial({
-        color: color.clone().lerp(new THREE.Color(0xffffff), 0.6),
-        roughness: 0.0, metalness: 0.0,
-        transparent: true, opacity: 0.45,    // 투명한 크리스탈
-        emissive: color.clone().multiplyScalar(0.4),
-        emissiveIntensity: 0.7,
-        depthWrite: false,                   // 투명 면 정렬 잡음 완화
+      const gemMat = new THREE.MeshPhysicalMaterial({
+        color: color.clone().lerp(new THREE.Color(0xffffff), 0.5),
+        metalness: 0.0, roughness: 0.0,
+        transmission: 1.0, thickness: 0.6, ior: 2.2, // 굴절 유리(다이아몬드급 ior)
+        specularIntensity: 1.0, envMapIntensity: 1.3,
+        transparent: true,
+        emissive: color.clone().multiplyScalar(0.25),
+        emissiveIntensity: 0.45,
         flatShading: true,
       });
       const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.24, 8), gemMat);
@@ -261,6 +272,7 @@ export function buildBoard(n, board) {
         gem.add(sp);
         sparkles.push({ sprite: sp, phase: Math.random() * Math.PI * 2, speed: 4 + Math.random() * 4 });
       }
+      gem.scale.setScalar(1.5); // 보석 1.5배
       gem.position.set(0, GEM_REST_Y, 0); // 처음엔 상자 바닥에
       gem.visible = false;
       group.add(gem);
@@ -444,6 +456,61 @@ function starTexture() {
   ctx.stroke();
   _starTex = new THREE.CanvasTexture(cv);
   return _starTex;
+}
+
+// ---------- 환경맵 (금속/유리 반사·굴절) ----------
+
+function buildEnvironment() {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 128;
+  const ctx = cv.getContext('2d');
+  // 위는 밝은 하늘빛, 가운데 밝은 띠(주광), 아래는 어두운 바닥 — 반사에 명암을 준다
+  const g = ctx.createLinearGradient(0, 0, 0, 128);
+  g.addColorStop(0.0, '#cdd6ea');
+  g.addColorStop(0.35, '#9aa7c4');
+  g.addColorStop(0.5, '#ffffff');
+  g.addColorStop(0.65, '#6b7590');
+  g.addColorStop(1.0, '#20242f');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 128);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  scene.environment = pmrem.fromEquirectangular(tex).texture;
+  tex.dispose();
+  pmrem.dispose();
+}
+
+// ---------- 스크래치 메탈 텍스처 (절차 생성) ----------
+
+let _scratchTex = null;
+function scratchTexture() {
+  if (_scratchTex) return _scratchTex;
+  const S = 512;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#8a8a8a'; // 중간 거칠기 베이스
+  ctx.fillRect(0, 0, S, S);
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 900; i++) {
+    const x = Math.random() * S, y = Math.random() * S;
+    const ang = Math.random() * Math.PI * 2;
+    const len = 8 + Math.random() * 90;
+    const v = Math.random();
+    // 밝은 스크래치(매끈=낮은 거칠기) / 어두운 스크래치(거침) 혼합
+    ctx.strokeStyle = v > 0.5
+      ? `rgba(235,235,235,${0.15 + Math.random() * 0.5})`
+      : `rgba(35,35,35,${0.15 + Math.random() * 0.5})`;
+    ctx.lineWidth = Math.random() < 0.85 ? 1 : 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    ctx.stroke();
+  }
+  _scratchTex = new THREE.CanvasTexture(cv);
+  _scratchTex.wrapS = _scratchTex.wrapT = THREE.RepeatWrapping;
+  return _scratchTex;
 }
 
 let _smokeTex = null;
