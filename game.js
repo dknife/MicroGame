@@ -482,24 +482,9 @@ function handlePointerUp() {
   drag = null;
 }
 
-function singleClick(r, c) {
-  if (locked) return;
-  const cell = cells[r][c];
-  if (cell.revealed || cell.mark === 'wrong') return;
-  cell.mark = cell.mark === 'paw' ? 'none' : 'paw';
-  playPop(cell.mark === 'none');
-  render();
-}
-
-// 길게 누르기: 붉은 물음표(확신 없음) 토글
-function longPress(r, c) {
-  if (locked) return;
-  const cell = cells[r][c];
-  if (cell.revealed || cell.mark === 'wrong') return;
-  cell.mark = cell.mark === 'question' ? 'none' : 'question';
-  playPop(cell.mark === 'none');
-  render();
-}
+// 단일 탭은 동작 없음 — 마킹은 길게 눌러 드래그, 회전은 드래그, 상자 열기는 더블탭.
+// (onCellClick의 더블탭 감지를 위해 함수 형태는 유지한다)
+function singleClick(r, c) { /* no-op */ }
 
 function doubleClick(r, c) {
   if (locked) return;
@@ -662,7 +647,6 @@ initRenderer(boardEl, {
   onEnter: (r, c) => onCellEnter(r, c),
   onUp: handlePointerUp,
   onTap: (r, c) => onCellClick(r, c),
-  onLongPress: (r, c) => longPress(r, c),
 });
 
 startGame();

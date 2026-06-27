@@ -36,14 +36,18 @@ let container;
 const orbit = { theta: 0, phi: 0.95, radius: 12, target: new THREE.Vector3(0, 0, 0) };
 
 // 입력 상태
+// 제스처: 드래그=회전, 길게 눌러 드래그=마킹, 더블탭=상자 열기, 두 손가락=핀치 줌
 const pointer = new THREE.Vector2();
-let activePointer = null;   // 'mark' | 'orbit' | null
-let markStart = null;       // { r, c }
-let lastMarkCell = null;    // 드래그 중 마지막으로 들어간 칸 (중복 방지)
-let lastPx = 0, lastPy = 0; // orbit 드래그용 이전 좌표
-let longPressTimer = null;  // 길게 누르기 감지 타이머
-let longPressed = false;    // 이번 누름이 길게 누르기로 처리됐는지
-const LONG_PRESS_MS = 450;
+const pointers = new Map();  // 활성 포인터 id -> {x, y} (멀티터치/핀치용)
+let gesture = null;          // 'pending' | 'orbit' | 'mark' | 'pinch' | null
+let pressCell = null;        // 눌린 지점의 칸 {r,c} 또는 null
+let lastMarkCell = null;     // 마킹 드래그 중 마지막으로 들어간 칸
+let downX = 0, downY = 0;    // 눌린 좌표 (회전 전환/탭 판정)
+let lastPx = 0, lastPy = 0;  // 회전 드래그 이전 좌표
+let longPressTimer = null;   // 길게 누르기 → 마킹 모드 진입 타이머
+let pinchStartDist = 0, pinchStartRadius = 0;
+const LONG_PRESS_MS = 400;
+const MOVE_THRESH2 = 64;     // 회전으로 전환되는 이동 임계값 (px², 8px)
 
 // 애니메이션 대상
 const lidTweens = new Map();   // boxKey -> 뚜껑 회전 트윈
@@ -371,16 +375,6 @@ function drawMark(b, mark) {
     ctx.moveTo(m + 4, m - 3); ctx.lineTo(n - 3, n + 4);
     ctx.moveTo(n - 4, m + 3); ctx.lineTo(m + 3, n - 4);
     ctx.stroke();
-  } else if (mark === 'question') {
-    // 붉은 물음표 (길게 누르기 — 확신 없는 표시)
-    ctx.fillStyle = '#e11515';
-    ctx.font = `bold ${S * 0.8}px Georgia, "Times New Roman", serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.shadowColor = 'rgba(180,0,0,0.5)';
-    ctx.shadowBlur = S * 0.06;
-    ctx.fillText('?', S / 2, S / 2 + S * 0.04);
-    ctx.shadowBlur = 0;
   }
   b.markTex.needsUpdate = true;
 }
@@ -490,40 +484,69 @@ function bindPointer() {
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 && e.button !== 2) return;
     canvas.setPointerCapture(e.pointerId);
-    setPointerNDC(e);
-    lastPx = e.clientX; lastPy = e.clientY;
-    const cell = e.button === 2 ? null : pickCell(); // 우클릭은 항상 회전
-    if (cell) {
-      activePointer = 'mark';
-      markStart = cell;
-      lastMarkCell = cell;
-      longPressed = false;
-      callbacks.onDown && callbacks.onDown(cell.r, cell.c, e.button);
-      // 움직이지 않고 길게 누르면 붉은 물음표 마킹
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // 두 번째 손가락 → 핀치 줌. 진행 중이던 단일 제스처는 정리
+    if (pointers.size >= 2) {
       clearTimeout(longPressTimer);
+      if (gesture === 'mark') callbacks.onUp && callbacks.onUp();
+      gesture = 'pinch';
+      const p = [...pointers.values()];
+      pinchStartDist = Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) || 1;
+      pinchStartRadius = orbit.radius;
+      return;
+    }
+
+    // 단일 포인터: 기본은 회전 대기. 길게 누르면 마킹 모드.
+    setPointerNDC(e);
+    downX = lastPx = e.clientX; downY = lastPy = e.clientY;
+    pressCell = pickCell();
+    lastMarkCell = null;
+    gesture = 'pending';
+    clearTimeout(longPressTimer);
+    if (e.button === 2) { gesture = 'orbit'; return; } // 우클릭은 항상 회전
+    if (pressCell) {
+      const cell = pressCell;
       longPressTimer = setTimeout(() => {
-        longPressed = true;
-        callbacks.onLongPress && callbacks.onLongPress(cell.r, cell.c);
+        gesture = 'mark'; // 길게 누름 → 마킹 시작, 시작 칸부터 적용
+        lastMarkCell = cell;
+        callbacks.onDown && callbacks.onDown(cell.r, cell.c, 0);
+        callbacks.onEnter && callbacks.onEnter(cell.r, cell.c);
       }, LONG_PRESS_MS);
-    } else {
-      activePointer = 'orbit';
     }
   });
 
   canvas.addEventListener('pointermove', (e) => {
-    if (!activePointer) return;
-    if (activePointer === 'orbit') {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (gesture === 'pinch') {
+      if (pointers.size < 2) return;
+      const p = [...pointers.values()];
+      const dist = Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) || 1;
+      orbit.radius = Math.max(4, Math.min(40, pinchStartRadius * (pinchStartDist / dist)));
+      updateCamera();
+      return;
+    }
+    if (gesture === 'pending') {
+      const dx = e.clientX - downX, dy = e.clientY - downY;
+      if (dx * dx + dy * dy > MOVE_THRESH2) {
+        gesture = 'orbit'; // 움직이면 회전 (길게 누르기 취소)
+        clearTimeout(longPressTimer);
+        lastPx = e.clientX; lastPy = e.clientY;
+      }
+      return;
+    }
+    if (gesture === 'orbit') {
       const dx = e.clientX - lastPx, dy = e.clientY - lastPy;
       lastPx = e.clientX; lastPy = e.clientY;
       orbit.theta -= dx * 0.008;
       orbit.phi = Math.max(0.15, Math.min(1.45, orbit.phi - dy * 0.008));
       updateCamera();
-    } else if (activePointer === 'mark') {
-      if (longPressed) return; // 길게 누르기 확정 후엔 드래그 무시
+    } else if (gesture === 'mark') {
       setPointerNDC(e);
       const cell = pickCell();
       if (cell && (cell.r !== lastMarkCell.r || cell.c !== lastMarkCell.c)) {
-        clearTimeout(longPressTimer); // 다른 칸으로 이동 = 드래그 → 길게 누르기 취소
         lastMarkCell = cell;
         callbacks.onEnter && callbacks.onEnter(cell.r, cell.c);
       }
@@ -531,20 +554,26 @@ function bindPointer() {
   });
 
   const endPointer = (e) => {
-    if (!activePointer) return;
-    const mode = activePointer;
-    activePointer = null;
+    if (!pointers.has(e.pointerId)) return;
+    pointers.delete(e.pointerId);
     clearTimeout(longPressTimer);
     try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
-    if (mode === 'mark') {
-      // game.js: onUp이 드래그 여부에 따라 suppressClick 설정 → 그 뒤 tap 호출.
-      // 단, 길게 누르기로 이미 처리됐으면 tap(마킹 토글)은 건너뛴다.
-      callbacks.onUp && callbacks.onUp();
-      if (!longPressed) callbacks.onTap && callbacks.onTap(markStart.r, markStart.c);
-      markStart = null;
-      lastMarkCell = null;
-      longPressed = false;
+
+    if (gesture === 'pinch') {
+      // 손가락 하나가 떨어지면 핀치 종료 (남은 손가락 점프 방지)
+      gesture = null;
+      pressCell = null; lastMarkCell = null;
+      return;
     }
+    const g = gesture;
+    gesture = null;
+    if (g === 'mark') {
+      callbacks.onUp && callbacks.onUp();
+    } else if (g === 'pending' && pressCell) {
+      // 움직임/길게누름 없이 뗌 = 탭 → 더블탭 감지(상자 열기)로 전달
+      callbacks.onTap && callbacks.onTap(pressCell.r, pressCell.c);
+    }
+    pressCell = null; lastMarkCell = null;
   };
   canvas.addEventListener('pointerup', endPointer);
   canvas.addEventListener('pointercancel', endPointer);
