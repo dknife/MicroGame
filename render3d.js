@@ -22,6 +22,8 @@ const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
 const OPEN_ANGLE = Math.PI / 2; // 뚜껑 열림 각도 — 박스 옆에 수직으로 세움
 const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
+const GEM_REST_Y = WALL_T + 0.12;     // 보석이 상자 바닥에 놓인 높이
+const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지 떠오름
 
 let scene, camera, renderer, raycaster;
 let boardGroup;          // 모든 박스를 담는 그룹 (회전/흔들림 적용)
@@ -52,6 +54,7 @@ const MOVE_THRESH2 = 64;     // 회전으로 전환되는 이동 임계값 (px²
 // 애니메이션 대상
 const lidTweens = new Map();   // boxKey -> 뚜껑 회전 트윈
 const sinkTweens = new Map();  // boxKey -> 박스 가라앉기 트윈
+const riseTweens = new Map();  // boxKey -> 보석 떠오르기 트윈
 const emitters = [];           // 오답 박스의 지속 연기 방출기 [{ b, acc }]
 const smokes = [];             // 활성 연기 파티클 그룹
 let shakeTime = 0;             // 남은 흔들림 시간
@@ -137,6 +140,7 @@ export function buildBoard(n, board) {
   boardData = board;
   lidTweens.clear();
   sinkTweens.clear();
+  riseTweens.clear();
   emitters.length = 0;
   for (const g of smokes) boardGroup.remove(g.group);
   smokes.length = 0;
@@ -223,19 +227,19 @@ export function buildBoard(n, board) {
       // 다이아몬드 (열리면 상자 안에서 드러남) — 크라운(윗부분) + 파빌리온(아랫부분)
       const gem = new THREE.Group();
       const gemMat = new THREE.MeshStandardMaterial({
-        color: color.clone().lerp(new THREE.Color(0xffffff), 0.55),
-        roughness: 0.02, metalness: 0.5,
-        emissive: color.clone().multiplyScalar(0.45),
+        color: color.clone().lerp(new THREE.Color(0xffffff), 0.6),
+        roughness: 0.0, metalness: 0.0,
+        transparent: true, opacity: 0.45,    // 투명한 크리스탈
+        emissive: color.clone().multiplyScalar(0.4),
         emissiveIntensity: 0.7,
+        depthWrite: false,                   // 투명 면 정렬 잡음 완화
         flatShading: true,
       });
       const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.24, 8), gemMat);
       pavilion.rotation.x = Math.PI; // 뾰족한 끝이 아래로
-      pavilion.castShadow = true;
       gem.add(pavilion);
       const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.16, 0.09, 8), gemMat);
       crown.position.y = 0.12 + 0.045; // 거들 위에 얹기
-      crown.castShadow = true;
       gem.add(crown);
       // 보석이 실제로 빛을 내도록 점광원 — 열리면(gem.visible) 함께 켜진다
       const gemLight = new THREE.PointLight(
@@ -257,7 +261,7 @@ export function buildBoard(n, board) {
         gem.add(sp);
         sparkles.push({ sprite: sp, phase: Math.random() * Math.PI * 2, speed: 4 + Math.random() * 4 });
       }
-      gem.position.set(0, WALL_T + 0.12, 0); // 파빌리온 끝이 바닥에 닿도록
+      gem.position.set(0, GEM_REST_Y, 0); // 처음엔 상자 바닥에
       gem.visible = false;
       group.add(gem);
 
@@ -290,11 +294,13 @@ export function syncState(state) {
       const cell = cells[r][c];
       const isFlash = flashing && flashing.r === r && flashing.c === c;
 
-      // 보석 공개 (한 번만)
+      // 보석 공개 (한 번만): 뚜껑 열고 보석이 뚜껑 높이까지 떠오른다
       if (cell.revealed && !b.revealed) {
         b.revealed = true;
         openLid(b);
         b.gem.visible = true;
+        b.gem.position.y = GEM_REST_Y;
+        riseTweens.set(lidKey(b), { obj: b.gem, from: GEM_REST_Y, to: GEM_RISE_Y, t: 0, dur: 1.1, ease: easeOutBackUp });
         drawMark(b, 'none');
       }
 
@@ -348,6 +354,11 @@ function sinkBox(b) {
 function easeOut(x) { return 1 - Math.pow(1 - x, 3); }
 function easeInOutCubic(x) {
   return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+// 끝에서 살짝 튀어오르는 느낌 (보석이 떠오를 때)
+function easeOutBackUp(x) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
 }
 
 // ---------- 마킹 그리기 ----------
@@ -607,15 +618,17 @@ function animate() {
     }
   }
 
-  // 박스 가라앉기 트윈 (오답)
-  for (const [key, tw] of sinkTweens) {
-    tw.t += dt / tw.dur;
-    if (tw.t >= 1) {
-      tw.obj.position.y = tw.to;
-      sinkTweens.delete(key);
-    } else {
-      const e = (tw.ease || easeOut)(tw.t);
-      tw.obj.position.y = tw.from + (tw.to - tw.from) * e;
+  // 박스 가라앉기(오답) / 보석 떠오르기 트윈 — 둘 다 position.y
+  for (const tweens of [sinkTweens, riseTweens]) {
+    for (const [key, tw] of tweens) {
+      tw.t += dt / tw.dur;
+      if (tw.t >= 1) {
+        tw.obj.position.y = tw.to;
+        tweens.delete(key);
+      } else {
+        const e = (tw.ease || easeOut)(tw.t);
+        tw.obj.position.y = tw.from + (tw.to - tw.from) * e;
+      }
     }
   }
 
