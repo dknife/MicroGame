@@ -185,13 +185,16 @@ export function buildBoard(n, board) {
       // 몸통 — 속이 빈 상자 (바닥 + 네 벽), 스크래치 메탈
       const ud = { r, c };
       const scr = scratchTexture();
+      const nrm = metalNormalTexture();
       const bodyMat = new THREE.MeshStandardMaterial({
         color, metalness: 0.95, roughness: 0.45,
-        roughnessMap: scr, bumpMap: scr, bumpScale: 0.015, envMapIntensity: 1.0,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
+        envMapIntensity: 1.0,
       });
       const wallMat = new THREE.MeshStandardMaterial({
         color: color.clone().multiplyScalar(0.9), metalness: 0.95, roughness: 0.5,
-        roughnessMap: scr, bumpMap: scr, bumpScale: 0.015, envMapIntensity: 1.0,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
+        envMapIntensity: 1.0,
       });
       const mk = (geo, mat, x, y, z) => {
         const m = new THREE.Mesh(geo, mat);
@@ -213,7 +216,8 @@ export function buildBoard(n, board) {
       lidPivot.position.set(0, BASE_H, BOX / 2);
       const lidMat = new THREE.MeshStandardMaterial({
         color: color.clone().multiplyScalar(1.05), metalness: 0.95, roughness: 0.45,
-        roughnessMap: scr, bumpMap: scr, bumpScale: 0.015, envMapIntensity: 1.0,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
+        envMapIntensity: 1.0,
       });
       const lid = new THREE.Mesh(lidGeo, lidMat);
       lid.position.set(0, LID_H / 2, -BOX / 2);
@@ -412,9 +416,10 @@ function spawnSmoke(b, opts) {
   group.position.y = b.group.position.y + BASE_H; // 가라앉은 박스의 입구에서 피어오르게
   const parts = [];
   const tex = smokeTexture();
+  const smokeColor = REGION_COLORS[b.reg % REGION_COLORS.length]; // 박스 색과 같은 연기
   for (let i = 0; i < count; i++) {
     const mat = new THREE.SpriteMaterial({
-      map: tex, color: 0x7bdc5a, transparent: true, opacity: 0.0, depthWrite: false,
+      map: tex, color: smokeColor, transparent: true, opacity: 0.0, depthWrite: false,
     });
     const s = new THREE.Sprite(mat);
     const a = Math.random() * Math.PI * 2;
@@ -511,6 +516,64 @@ function scratchTexture() {
   _scratchTex = new THREE.CanvasTexture(cv);
   _scratchTex.wrapS = _scratchTex.wrapT = THREE.RepeatWrapping;
   return _scratchTex;
+}
+
+// 울퉁불퉁한 금속 표면 노멀맵 — 범프(돌기/패임) + 스크래치 높이장에서 유도
+let _metalNrm = null;
+function metalNormalTexture() {
+  if (_metalNrm) return _metalNrm;
+  const S = 256;
+  // 1) 높이장(height field) 그리기
+  const hc = document.createElement('canvas');
+  hc.width = hc.height = S;
+  const hx = hc.getContext('2d');
+  hx.fillStyle = '#808080';
+  hx.fillRect(0, 0, S, S);
+  for (let i = 0; i < 90; i++) { // 울퉁불퉁 돌기/패임
+    const x = Math.random() * S, y = Math.random() * S, r = 6 + Math.random() * 38;
+    const c = Math.random() > 0.5 ? '255,255,255' : '0,0,0';
+    const g = hx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${c},${0.2 + Math.random() * 0.4})`);
+    g.addColorStop(1, `rgba(${c},0)`);
+    hx.fillStyle = g;
+    hx.beginPath(); hx.arc(x, y, r, 0, Math.PI * 2); hx.fill();
+  }
+  hx.lineCap = 'round';
+  for (let i = 0; i < 500; i++) { // 스크래치 홈
+    const x = Math.random() * S, y = Math.random() * S, a = Math.random() * Math.PI * 2, len = 6 + Math.random() * 55;
+    hx.strokeStyle = Math.random() > 0.5
+      ? `rgba(255,255,255,${0.2 + Math.random() * 0.4})`
+      : `rgba(0,0,0,${0.2 + Math.random() * 0.4})`;
+    hx.lineWidth = Math.random() < 0.85 ? 1 : 2;
+    hx.beginPath(); hx.moveTo(x, y); hx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); hx.stroke();
+  }
+  // 2) 높이장 → 노멀맵 (이웃 밝기 기울기로 법선 계산)
+  const hd = hx.getImageData(0, 0, S, S).data;
+  const at = (x, y) => hd[(((y + S) % S) * S + ((x + S) % S)) * 4] / 255;
+  const nc = document.createElement('canvas');
+  nc.width = nc.height = S;
+  const nx = nc.getContext('2d');
+  const nimg = nx.createImageData(S, S);
+  const nd = nimg.data;
+  const strength = 2.5;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      let dx = (at(x - 1, y) - at(x + 1, y)) * strength;
+      let dy = (at(x, y - 1) - at(x, y + 1)) * strength;
+      let dz = 1.0;
+      const len = Math.hypot(dx, dy, dz) || 1;
+      dx /= len; dy /= len; dz /= len;
+      const o = (y * S + x) * 4;
+      nd[o] = (dx * 0.5 + 0.5) * 255;
+      nd[o + 1] = (dy * 0.5 + 0.5) * 255;
+      nd[o + 2] = (dz * 0.5 + 0.5) * 255;
+      nd[o + 3] = 255;
+    }
+  }
+  nx.putImageData(nimg, 0, 0);
+  _metalNrm = new THREE.CanvasTexture(nc);
+  _metalNrm.wrapS = _metalNrm.wrapT = THREE.RepeatWrapping;
+  return _metalNrm;
 }
 
 let _smokeTex = null;
