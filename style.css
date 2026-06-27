@@ -12,7 +12,7 @@ body {
   flex-direction: column;
   align-items: center;
   font-family: 'Segoe UI', system-ui, sans-serif;
-  background: #2b2d42;
+  background: #07080d;
   color: #edf2f4;
 }
 
@@ -92,12 +92,14 @@ main {
 #board {
   /* WebGL 캔버스 컨테이너 — 터치는 스크롤/줌 대신 드래그/회전으로 사용 */
   touch-action: none;
-  background: radial-gradient(circle at 50% 30%, #3a3d5c 0%, #1a1b2e 75%);
+  /* 극적 배경: 가운데에 은은한 스포트라이트, 가장자리는 칠흑 (비네팅) */
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 38%, #2e3354 0%, #11131f 45%, #05060b 100%);
   border-radius: 14px;
   width: min(92vw, 640px);
   aspect-ratio: 1;
   overflow: hidden;
-  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.7);
 }
 
 #board canvas {
