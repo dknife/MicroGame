@@ -29,6 +29,7 @@ let size = 0;
 let boardData = null;
 let callbacks = {};
 let canvas;
+let container;
 
 // 카메라 궤도(orbit) 상태
 const orbit = { theta: 0, phi: 0.95, radius: 12, target: new THREE.Vector3(0, 0, 0) };
@@ -48,18 +49,20 @@ const clock = new THREE.Clock();
 
 // ---------- 초기화 ----------
 
-export function initRenderer(container, cbs) {
+export function initRenderer(host, cbs) {
   callbacks = cbs || {};
+  container = host;
 
   scene = new THREE.Scene();
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.appendChild(renderer.domElement);
   canvas = renderer.domElement;
   canvas.style.touchAction = 'none'; // 터치 드래그가 스크롤 대신 입력이 되도록
+  canvas.style.display = 'block';
 
   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 
@@ -94,15 +97,25 @@ export function initRenderer(container, cbs) {
   raycaster = new THREE.Raycaster();
 
   bindPointer();
+  // iOS Safari는 초기 레이아웃/주소창 변화/회전 시 크기를 늦게 확정하므로
+  // 여러 경로로 리사이즈를 다시 잡아 캔버스 어긋남을 막는다.
   window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', () => setTimeout(onResize, 200));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
+  if (window.ResizeObserver) new ResizeObserver(onResize).observe(container);
   onResize();
+  requestAnimationFrame(onResize);
+  setTimeout(onResize, 300);
   animate();
 }
 
 function onResize() {
-  const w = canvas.clientWidth || canvas.parentElement.clientWidth;
-  const h = canvas.clientHeight || canvas.parentElement.clientHeight;
-  renderer.setSize(w, h, false);
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
+  const w = Math.max(1, Math.round(rect.width));
+  const h = Math.max(1, Math.round(rect.height));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(w, h, true); // 인라인 스타일까지 갱신해 CSS와 어긋나지 않게
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
