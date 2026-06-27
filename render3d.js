@@ -21,6 +21,7 @@ const BASE_H = 0.55;     // 박스 몸통 높이
 const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
 const OPEN_ANGLE = Math.PI / 2; // 뚜껑 열림 각도 — 박스 옆에 수직으로 세움
+const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
 
 let scene, camera, renderer, raycaster;
 let boardGroup;          // 모든 박스를 담는 그룹 (회전/흔들림 적용)
@@ -40,9 +41,14 @@ let activePointer = null;   // 'mark' | 'orbit' | null
 let markStart = null;       // { r, c }
 let lastMarkCell = null;    // 드래그 중 마지막으로 들어간 칸 (중복 방지)
 let lastPx = 0, lastPy = 0; // orbit 드래그용 이전 좌표
+let longPressTimer = null;  // 길게 누르기 감지 타이머
+let longPressed = false;    // 이번 누름이 길게 누르기로 처리됐는지
+const LONG_PRESS_MS = 450;
 
 // 애니메이션 대상
-const lidTweens = new Map();   // boxKey -> { from, to, t, dur }
+const lidTweens = new Map();   // boxKey -> 뚜껑 회전 트윈
+const sinkTweens = new Map();  // boxKey -> 박스 가라앉기 트윈
+const emitters = [];           // 오답 박스의 지속 연기 방출기 [{ b, acc }]
 const smokes = [];             // 활성 연기 파티클 그룹
 let shakeTime = 0;             // 남은 흔들림 시간
 const clock = new THREE.Clock();
@@ -126,6 +132,8 @@ export function buildBoard(n, board) {
   size = n;
   boardData = board;
   lidTweens.clear();
+  sinkTweens.clear();
+  emitters.length = 0;
   for (const g of smokes) boardGroup.remove(g.group);
   smokes.length = 0;
 
@@ -211,9 +219,10 @@ export function buildBoard(n, board) {
       // 다이아몬드 (열리면 상자 안에서 드러남) — 크라운(윗부분) + 파빌리온(아랫부분)
       const gem = new THREE.Group();
       const gemMat = new THREE.MeshStandardMaterial({
-        color: color.clone().lerp(new THREE.Color(0xffffff), 0.45),
-        roughness: 0.05, metalness: 0.35,
-        emissive: color.clone().multiplyScalar(0.4),
+        color: color.clone().lerp(new THREE.Color(0xffffff), 0.55),
+        roughness: 0.02, metalness: 0.5,
+        emissive: color.clone().multiplyScalar(0.45),
+        emissiveIntensity: 0.7,
         flatShading: true,
       });
       const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.24, 8), gemMat);
@@ -224,13 +233,33 @@ export function buildBoard(n, board) {
       crown.position.y = 0.12 + 0.045; // 거들 위에 얹기
       crown.castShadow = true;
       gem.add(crown);
+      // 보석이 실제로 빛을 내도록 점광원 — 열리면(gem.visible) 함께 켜진다
+      const gemLight = new THREE.PointLight(
+        color.clone().lerp(new THREE.Color(0xffffff), 0.4), 0, 2.6, 2
+      );
+      gemLight.position.set(0, 0.2, 0);
+      gem.add(gemLight);
+      // 반짝이 스파클 (반짝반짝 빛남) — 보석에 붙어 깜빡인다
+      const sparkles = [];
+      for (let i = 0; i < 3; i++) {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: starTexture(), color: 0xffffff, transparent: true, opacity: 0,
+          blending: THREE.AdditiveBlending, depthWrite: false,
+        }));
+        const ang = (i / 3) * Math.PI * 2 + Math.random();
+        const rad = 0.07 + Math.random() * 0.12;
+        sp.position.set(Math.cos(ang) * rad, 0.1 + Math.random() * 0.16, Math.sin(ang) * rad);
+        sp.scale.set(0.08, 0.08, 0.08);
+        gem.add(sp);
+        sparkles.push({ sprite: sp, phase: Math.random() * Math.PI * 2, speed: 4 + Math.random() * 4 });
+      }
       gem.position.set(0, WALL_T + 0.12, 0); // 파빌리온 끝이 바닥에 닿도록
       gem.visible = false;
       group.add(gem);
 
       boardGroup.add(group);
       boxes[r].push({
-        group, lidPivot, lid, gem,
+        group, lidPivot, lid, gem, gemMat, gemLight, sparkles, wrong: false,
         pickParts: [lid, floor, wallBack, wallFront, wallRight, wallLeft],
         markCanvas, markCtx: markCanvas.getContext('2d'), markTex,
         reg, mark: 'none', revealed: false, flashOpen: false,
@@ -265,18 +294,27 @@ export function syncState(state) {
         drawMark(b, 'none');
       }
 
-      // 오답 연기: flashing 동안 열고 연기, 끝나면 닫기
+      // 오답 직후 잠깐(flashing): 뚜껑 열고 연기 한 번
       if (isFlash && !b.flashOpen) {
         b.flashOpen = true;
         openLid(b);
         spawnSmoke(b);
-      } else if (!isFlash && b.flashOpen && !b.revealed) {
+      } else if (!isFlash && b.flashOpen && !b.revealed && cell.mark !== 'wrong') {
         b.flashOpen = false;
         closeLid(b);
       }
 
-      // 마킹 텍스처 갱신
-      const wantMark = cell.revealed ? 'none' : cell.mark;
+      // 오답 확정: 박스가 눌려 가라앉은 채 뚜껑을 열어두고 연기를 계속 뿜는다
+      if (cell.mark === 'wrong' && !b.wrong) {
+        b.wrong = true;
+        b.flashOpen = false;
+        openLid(b);
+        sinkBox(b);
+        emitters.push({ b, acc: 0 });
+      }
+
+      // 마킹 텍스처 갱신 (오답 박스는 연기로 표현하므로 면 마킹 없음)
+      const wantMark = (cell.revealed || cell.mark === 'wrong') ? 'none' : cell.mark;
       if (wantMark !== b.mark) drawMark(b, wantMark);
     }
   }
@@ -298,6 +336,11 @@ function closeLid(b) {
   lidTweens.set(lidKey(b), { obj: b.lidPivot, from: b.lidPivot.rotation.x, to: 0, t: 0, dur: 0.5, ease: easeInOutCubic });
 }
 
+// 오답 박스를 눌러 가라앉힌다
+function sinkBox(b) {
+  sinkTweens.set(lidKey(b), { obj: b.group, from: b.group.position.y, to: -SINK, t: 0, dur: 0.4, ease: easeOut });
+}
+
 function easeOut(x) { return 1 - Math.pow(1 - x, 3); }
 function easeInOutCubic(x) {
   return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
@@ -310,30 +353,49 @@ function drawMark(b, mark) {
   const ctx = b.markCtx;
   const S = b.markCanvas.width;
   ctx.clearRect(0, 0, S, S);
-  if (mark === 'paw' || mark === 'wrong') {
-    ctx.font = `${S * 0.68}px serif`;
+  if (mark === 'paw') {
+    // 검은 페인트를 붓으로 칠한 듯한 굵은 X
+    const m = S * 0.24, n = S * 0.76;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#0d0d0d';
+    ctx.lineWidth = S * 0.17;
+    ctx.beginPath();
+    ctx.moveTo(m, m); ctx.lineTo(n, n);
+    ctx.moveTo(n, m); ctx.lineTo(m, n);
+    ctx.stroke();
+    // 살짝 어긋나게 덧칠해 페인트 질감
+    ctx.strokeStyle = 'rgba(20,20,20,0.5)';
+    ctx.lineWidth = S * 0.08;
+    ctx.beginPath();
+    ctx.moveTo(m + 4, m - 3); ctx.lineTo(n - 3, n + 4);
+    ctx.moveTo(n - 4, m + 3); ctx.lineTo(m + 3, n - 4);
+    ctx.stroke();
+  } else if (mark === 'question') {
+    // 붉은 물음표 (길게 누르기 — 확신 없는 표시)
+    ctx.fillStyle = '#e11515';
+    ctx.font = `bold ${S * 0.8}px Georgia, "Times New Roman", serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    if (mark === 'wrong') {
-      ctx.fillStyle = '#d11';
-      ctx.font = `bold ${S * 0.7}px sans-serif`;
-      ctx.fillText('✕', S / 2, S / 2 + S * 0.04);
-    } else {
-      ctx.fillText('🐾', S / 2, S / 2 + S * 0.04);
-    }
+    ctx.shadowColor = 'rgba(180,0,0,0.5)';
+    ctx.shadowBlur = S * 0.06;
+    ctx.fillText('?', S / 2, S / 2 + S * 0.04);
+    ctx.shadowBlur = 0;
   }
   b.markTex.needsUpdate = true;
 }
 
 // ---------- 독성 연기 파티클 ----------
 
-function spawnSmoke(b) {
+function spawnSmoke(b, opts) {
+  const count = (opts && opts.count) || 14;
+  const life = (opts && opts.life) || 1.1;
   const group = new THREE.Group();
   group.position.copy(b.group.position);
-  group.position.y = BASE_H;
+  group.position.y = b.group.position.y + BASE_H; // 가라앉은 박스의 입구에서 피어오르게
   const parts = [];
   const tex = smokeTexture();
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < count; i++) {
     const mat = new THREE.SpriteMaterial({
       map: tex, color: 0x7bdc5a, transparent: true, opacity: 0.0, depthWrite: false,
     });
@@ -354,7 +416,29 @@ function spawnSmoke(b) {
     });
   }
   boardGroup.add(group);
-  smokes.push({ group, parts, t: 0, life: 1.1 });
+  smokes.push({ group, parts, t: 0, life });
+}
+
+let _starTex = null;
+function starTexture() {
+  if (_starTex) return _starTex;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 64;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 10);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(32, 32, 10, 0, Math.PI * 2); ctx.fill();
+  // 4방향으로 뻗는 빛줄기
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(32, 2); ctx.lineTo(32, 62);
+  ctx.moveTo(2, 32); ctx.lineTo(62, 32);
+  ctx.stroke();
+  _starTex = new THREE.CanvasTexture(cv);
+  return _starTex;
 }
 
 let _smokeTex = null;
@@ -413,7 +497,14 @@ function bindPointer() {
       activePointer = 'mark';
       markStart = cell;
       lastMarkCell = cell;
+      longPressed = false;
       callbacks.onDown && callbacks.onDown(cell.r, cell.c, e.button);
+      // 움직이지 않고 길게 누르면 붉은 물음표 마킹
+      clearTimeout(longPressTimer);
+      longPressTimer = setTimeout(() => {
+        longPressed = true;
+        callbacks.onLongPress && callbacks.onLongPress(cell.r, cell.c);
+      }, LONG_PRESS_MS);
     } else {
       activePointer = 'orbit';
     }
@@ -428,9 +519,11 @@ function bindPointer() {
       orbit.phi = Math.max(0.15, Math.min(1.45, orbit.phi - dy * 0.008));
       updateCamera();
     } else if (activePointer === 'mark') {
+      if (longPressed) return; // 길게 누르기 확정 후엔 드래그 무시
       setPointerNDC(e);
       const cell = pickCell();
       if (cell && (cell.r !== lastMarkCell.r || cell.c !== lastMarkCell.c)) {
+        clearTimeout(longPressTimer); // 다른 칸으로 이동 = 드래그 → 길게 누르기 취소
         lastMarkCell = cell;
         callbacks.onEnter && callbacks.onEnter(cell.r, cell.c);
       }
@@ -441,13 +534,16 @@ function bindPointer() {
     if (!activePointer) return;
     const mode = activePointer;
     activePointer = null;
+    clearTimeout(longPressTimer);
     try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
     if (mode === 'mark') {
-      // game.js: onUp이 드래그 여부에 따라 suppressClick 설정 → 그 뒤 tap 호출
+      // game.js: onUp이 드래그 여부에 따라 suppressClick 설정 → 그 뒤 tap 호출.
+      // 단, 길게 누르기로 이미 처리됐으면 tap(마킹 토글)은 건너뛴다.
       callbacks.onUp && callbacks.onUp();
-      callbacks.onTap && callbacks.onTap(markStart.r, markStart.c);
+      if (!longPressed) callbacks.onTap && callbacks.onTap(markStart.r, markStart.c);
       markStart = null;
       lastMarkCell = null;
+      longPressed = false;
     }
   };
   canvas.addEventListener('pointerup', endPointer);
@@ -482,9 +578,42 @@ function animate() {
     }
   }
 
-  // 보석 반짝 회전
+  // 박스 가라앉기 트윈 (오답)
+  for (const [key, tw] of sinkTweens) {
+    tw.t += dt / tw.dur;
+    if (tw.t >= 1) {
+      tw.obj.position.y = tw.to;
+      sinkTweens.delete(key);
+    } else {
+      const e = (tw.ease || easeOut)(tw.t);
+      tw.obj.position.y = tw.from + (tw.to - tw.from) * e;
+    }
+  }
+
+  // 보석: 천천히 회전 + 글로우 맥동 + 스파클 반짝임
+  const time = clock.elapsedTime;
   for (const row of boxes) for (const b of row) {
-    if (b.gem.visible) b.gem.rotation.y += dt * 1.6;
+    if (!b.gem.visible) continue;
+    b.gem.rotation.y += dt * 1.4;
+    const pulse = 0.5 + 0.5 * Math.sin(time * 3 + b.reg); // 0~1
+    b.gemMat.emissiveIntensity = 0.5 + 0.6 * pulse;
+    b.gemLight.intensity = 1.4 + 1.0 * pulse; // 실제 발광
+    for (const sp of b.sparkles) {
+      const tw = Math.sin(time * sp.speed + sp.phase);
+      const o = Math.max(0, tw);
+      sp.sprite.material.opacity = o * o;
+      const sc = 0.05 + 0.13 * o;
+      sp.sprite.scale.set(sc, sc, sc);
+    }
+  }
+
+  // 오답 박스: 연기를 주기적으로 계속 뿜는다
+  for (const em of emitters) {
+    em.acc += dt;
+    if (em.acc >= 0.45) {
+      em.acc = 0;
+      spawnSmoke(em.b, { count: 6, life: 1.6 });
+    }
   }
 
   // 연기

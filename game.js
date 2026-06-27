@@ -491,6 +491,16 @@ function singleClick(r, c) {
   render();
 }
 
+// 길게 누르기: 붉은 물음표(확신 없음) 토글
+function longPress(r, c) {
+  if (locked) return;
+  const cell = cells[r][c];
+  if (cell.revealed || cell.mark === 'wrong') return;
+  cell.mark = cell.mark === 'question' ? 'none' : 'question';
+  playPop(cell.mark === 'none');
+  render();
+}
+
 function doubleClick(r, c) {
   if (locked) return;
   const cell = cells[r][c];
@@ -542,7 +552,7 @@ function onMistake(r, c) {
     render();
     if (mistakes >= MAX_MISTAKES) {
       locked = true;
-      showOverlay('😿 Game Over', '돌멩이를 세 번 뒤집었어요.', 'Restart', resetRound);
+      showOverlay('💔 Game Over', '빈 상자를 세 번 열었어요.', 'Restart', resetRound);
     }
   }, 800);
 }
@@ -551,7 +561,7 @@ function onMistake(r, c) {
 function onLevelClear() {
   locked = true;
   playFanfare();
-  bannerMsgEl.textContent = `🎉 고양이 ${size}마리를 모두 찾았어요!`;
+  bannerMsgEl.textContent = `🎉 보석 ${size}개를 모두 찾았어요!`;
   bannerEl.classList.remove('hidden');
 }
 
@@ -652,6 +662,7 @@ initRenderer(boardEl, {
   onEnter: (r, c) => onCellEnter(r, c),
   onUp: handlePointerUp,
   onTap: (r, c) => onCellClick(r, c),
+  onLongPress: (r, c) => longPress(r, c),
 });
 
 startGame();
