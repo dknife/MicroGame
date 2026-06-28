@@ -160,6 +160,10 @@ export function buildBoard(n, board) {
     for (let c = 0; c < n; c++) {
       const reg = board.regions[r][c];
       const color = new THREE.Color(REGION_COLORS[reg % REGION_COLORS.length]);
+      // 마킹용 보색 (색상환 반대편, 채도·명도는 가독성 위해 보정)
+      const _hsl = {}; color.getHSL(_hsl);
+      const markColor = '#' + new THREE.Color()
+        .setHSL((_hsl.h + 0.5) % 1, Math.min(1, _hsl.s + 0.25), 0.55).getHexString();
       const cx = (c - off) * CELL;
       const cz = (r - off) * CELL;
 
@@ -180,15 +184,16 @@ export function buildBoard(n, board) {
       };
       const scr = variedClone(scratchTexture());
       const nrm = variedClone(metalNormalTexture());
+      // 스펙큘러 약하게 + 난반사 강하게 → 색이 잘 보이게 (금속감↓, 거칠기↑)
       const bodyMat = new THREE.MeshPhysicalMaterial({
-        color, metalness: 0.7, roughness: 0.48,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.85, 0.85),
-        envMapIntensity: 1.15, clearcoat: 0.72, clearcoatRoughness: 0.26,
+        color, metalness: 0.15, roughness: 0.72,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.7, 0.7),
+        envMapIntensity: 0.45, clearcoat: 0.1, clearcoatRoughness: 0.6,
       });
       const wallMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().multiplyScalar(0.88), metalness: 0.7, roughness: 0.52,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.85, 0.85),
-        envMapIntensity: 1.15, clearcoat: 0.72, clearcoatRoughness: 0.26,
+        color: color.clone().multiplyScalar(0.9), metalness: 0.15, roughness: 0.75,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.7, 0.7),
+        envMapIntensity: 0.45, clearcoat: 0.1, clearcoatRoughness: 0.6,
       });
       const mk = (geo, mat, x, y, z) => {
         const m = new THREE.Mesh(geo, mat);
@@ -209,9 +214,9 @@ export function buildBoard(n, board) {
       const lidPivot = new THREE.Group();
       lidPivot.position.set(0, BASE_H, BOX / 2);
       const lidMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().multiplyScalar(1.1), metalness: 0.7, roughness: 0.45,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.85, 0.85),
-        envMapIntensity: 1.2, clearcoat: 0.78, clearcoatRoughness: 0.24,
+        color: color.clone().multiplyScalar(1.05), metalness: 0.15, roughness: 0.7,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.7, 0.7),
+        envMapIntensity: 0.5, clearcoat: 0.12, clearcoatRoughness: 0.55,
       });
       const lid = new THREE.Mesh(lidGeo, lidMat);
       lid.position.set(0, LID_H / 2, -BOX / 2);
@@ -295,6 +300,7 @@ export function buildBoard(n, board) {
       boardGroup.add(group);
       boxes[r].push({
         group, lidPivot, lid, gem, gemMat, gemLight, sparkles, wrong: false,
+        markColor,
         lidT: 0, lidOpen: false, // 0=닫힘, 1=완전히 열려 옆에 눕힘
         pickParts: [lid, floor, wallBack, wallFront, wallRight, wallLeft],
         markCanvas, markCtx: markCanvas.getContext('2d'), markTex,
@@ -416,22 +422,21 @@ function drawMark(b, mark) {
   const S = b.markCanvas.width;
   ctx.clearRect(0, 0, S, S);
   if (mark === 'paw') {
-    // 검은 페인트를 붓으로 칠한 듯한 굵은 X
+    // 상자색의 보색으로 그린 굵은 X (가독성 위해 어두운 외곽선)
     const m = S * 0.24, n = S * 0.76;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = '#0d0d0d';
-    ctx.lineWidth = S * 0.17;
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';   // 외곽선
+    ctx.lineWidth = S * 0.22;
     ctx.beginPath();
     ctx.moveTo(m, m); ctx.lineTo(n, n);
     ctx.moveTo(n, m); ctx.lineTo(m, n);
     ctx.stroke();
-    // 살짝 어긋나게 덧칠해 페인트 질감
-    ctx.strokeStyle = 'rgba(20,20,20,0.5)';
-    ctx.lineWidth = S * 0.08;
+    ctx.strokeStyle = b.markColor || '#ffffff'; // 보색 X
+    ctx.lineWidth = S * 0.15;
     ctx.beginPath();
-    ctx.moveTo(m + 4, m - 3); ctx.lineTo(n - 3, n + 4);
-    ctx.moveTo(n - 4, m + 3); ctx.lineTo(m + 3, n - 4);
+    ctx.moveTo(m, m); ctx.lineTo(n, n);
+    ctx.moveTo(n, m); ctx.lineTo(m, n);
     ctx.stroke();
   }
   b.markTex.needsUpdate = true;
