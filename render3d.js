@@ -80,8 +80,8 @@ export function initRenderer(host, cbs) {
   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 
   // 조명 — 박스 색이 잘 보이도록 보조광을 넉넉히
-  scene.add(new THREE.HemisphereLight(0xdce4f5, 0x2a2233, 0.95));
-  scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+  scene.add(new THREE.HemisphereLight(0xdce4f5, 0x2a2233, 0.78));
+  scene.add(new THREE.AmbientLight(0xffffff, 0.18));
   dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
   dirLight.position.set(6, 12, 8);
   scene.add(dirLight);
@@ -166,14 +166,14 @@ export function buildBoard(n, board) {
       const scr = scratchTexture();
       const nrm = metalNormalTexture();
       const bodyMat = new THREE.MeshPhysicalMaterial({
-        color, metalness: 0.45, roughness: 0.5,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
-        envMapIntensity: 0.8, clearcoat: 0.6, clearcoatRoughness: 0.3,
+        color, metalness: 0.7, roughness: 0.48,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.85, 0.85),
+        envMapIntensity: 1.15, clearcoat: 0.72, clearcoatRoughness: 0.26,
       });
       const wallMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().multiplyScalar(0.88), metalness: 0.45, roughness: 0.55,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
-        envMapIntensity: 0.8, clearcoat: 0.6, clearcoatRoughness: 0.3,
+        color: color.clone().multiplyScalar(0.88), metalness: 0.7, roughness: 0.52,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.85, 0.85),
+        envMapIntensity: 1.15, clearcoat: 0.72, clearcoatRoughness: 0.26,
       });
       const mk = (geo, mat, x, y, z) => {
         const m = new THREE.Mesh(geo, mat);
@@ -194,9 +194,9 @@ export function buildBoard(n, board) {
       const lidPivot = new THREE.Group();
       lidPivot.position.set(0, BASE_H, BOX / 2);
       const lidMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().multiplyScalar(1.1), metalness: 0.45, roughness: 0.48,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
-        envMapIntensity: 0.85, clearcoat: 0.7, clearcoatRoughness: 0.28,
+        color: color.clone().multiplyScalar(1.1), metalness: 0.7, roughness: 0.45,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.85, 0.85),
+        envMapIntensity: 1.2, clearcoat: 0.78, clearcoatRoughness: 0.24,
       });
       const lid = new THREE.Mesh(lidGeo, lidMat);
       lid.position.set(0, LID_H / 2, -BOX / 2);
