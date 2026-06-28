@@ -30,6 +30,8 @@ let diamondMap = null, diamondEnv = null; // 보석용 색상 텍스처 / 환경
 let skyMesh = null;       // 회전하는 배경 구체
 let celebrating = false;  // 레벨 클리어 후 카메라 자동 선회
 let paused = false;       // 포커스/가시성 상실 시 렌더 루프 정지
+// 관성 회전: 손을 떼면 마지막 축/속도(rad/s)로 계속 돈다 (다음 터치까지)
+let spinning = false, spinTheta = 0, spinPhi = 0, lastMoveT = 0;
 let boardGroup;          // 모든 박스를 담는 그룹 (회전/흔들림 적용)
 let boxes = [];          // [r][c] -> 박스 정보 객체
 let size = 0;
@@ -385,6 +387,7 @@ export function shake() {
 // (사용자가 화면을 만지거나 새 판이 만들어지면 자동 해제)
 export function celebrate() {
   celebrating = true;
+  spinning = false;
 }
 
 // ---------- 뚜껑 애니메이션 ----------
@@ -629,34 +632,34 @@ function buildProceduralSky() {
   ctx.fillStyle = haze;
   ctx.fillRect(0, H * 0.32, W, H * 0.38);
 
-  // --- 섬광: 밝은 빛 폭발 + 십자 광선 (가장자리는 wrap 복제) ---
+  // --- 섬광: 은은한 빛 폭발 (가장자리는 wrap 복제) — 과하게 밝지 않게 ---
   const flash = (cx, cy, rad, col) => {
     for (const ox of [-W, 0, W]) {
       const g = ctx.createRadialGradient(cx + ox, cy, 0, cx + ox, cy, rad);
       g.addColorStop(0, col);
-      g.addColorStop(0.25, 'rgba(200,235,255,0.5)');
-      g.addColorStop(1, 'rgba(120,180,220,0)');
+      g.addColorStop(0.3, 'rgba(180,210,235,0.16)');
+      g.addColorStop(1, 'rgba(120,170,210,0)');
       ctx.fillStyle = g;
       ctx.beginPath(); ctx.arc(cx + ox, cy, rad, 0, Math.PI * 2); ctx.fill();
     }
   };
-  const nFlash = 5 + Math.floor(Math.random() * 4);
+  const nFlash = 2 + Math.floor(Math.random() * 3);
   for (let i = 0; i < nFlash; i++) {
     const cx = Math.random() * W;
     const cy = H * (0.12 + Math.random() * 0.5);
-    const rad = 40 + Math.random() * 130;
-    flash(cx, cy, rad, 'rgba(255,255,255,0.95)');
-    // 큰 섬광엔 길쭉한 광선
-    if (rad > 90) {
+    const rad = 40 + Math.random() * 110;
+    flash(cx, cy, rad, 'rgba(235,245,255,0.35)'); // 코어 밝기↓
+    // 큰 섬광엔 가느다란 광선 (희미하게)
+    if (rad > 95) {
       ctx.save();
       ctx.translate(cx, cy);
-      const lg = ctx.createLinearGradient(-rad * 2.4, 0, rad * 2.4, 0);
+      const lg = ctx.createLinearGradient(-rad * 2.0, 0, rad * 2.0, 0);
       lg.addColorStop(0, 'rgba(180,220,255,0)');
-      lg.addColorStop(0.5, 'rgba(230,245,255,0.55)');
+      lg.addColorStop(0.5, 'rgba(220,238,255,0.18)');
       lg.addColorStop(1, 'rgba(180,220,255,0)');
       ctx.fillStyle = lg;
-      ctx.fillRect(-rad * 2.4, -1.5, rad * 4.8, 3);
-      ctx.fillRect(-1.5, -rad * 1.4, 3, rad * 2.8);
+      ctx.fillRect(-rad * 2.0, -1, rad * 4.0, 2);
+      ctx.fillRect(-1, -rad * 1.1, 2, rad * 2.2);
       ctx.restore();
     }
   }
@@ -839,6 +842,8 @@ function bindPointer() {
     if (e.button !== 0 && e.button !== 2) return;
     e.preventDefault(); // 텍스트/요소 선택 시작 방지
     celebrating = false; // 사용자가 만지면 자동 선회 중단
+    spinning = false;    // 손을 대면 관성 회전 정지
+    lastMoveT = performance.now();
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -896,8 +901,15 @@ function bindPointer() {
     if (gesture === 'orbit') {
       const dx = e.clientX - lastPx, dy = e.clientY - lastPy;
       lastPx = e.clientX; lastPy = e.clientY;
-      orbit.theta -= dx * 0.008;
-      orbit.phi = Math.max(0.15, Math.min(1.45, orbit.phi - dy * 0.008));
+      const dTheta = -dx * 0.008, dPhi = -dy * 0.008;
+      orbit.theta += dTheta;
+      orbit.phi = Math.max(0.15, Math.min(1.45, orbit.phi + dPhi));
+      // 마지막 회전 속도(rad/s) 기록 → 놓을 때 관성으로 사용
+      const now = performance.now();
+      const dtv = Math.min(0.1, Math.max(0.001, (now - lastMoveT) / 1000));
+      spinTheta = dTheta / dtv;
+      spinPhi = dPhi / dtv;
+      lastMoveT = now;
       updateCamera();
     } else if (gesture === 'mark') {
       setPointerNDC(e);
@@ -923,7 +935,11 @@ function bindPointer() {
     }
     const g = gesture;
     gesture = null;
-    if (g === 'mark') {
+    if (g === 'orbit') {
+      // 최근(120ms 내)에 충분히 빠르게 움직였다면 관성 회전 시작
+      const recent = (performance.now() - lastMoveT) < 120;
+      spinning = recent && Math.hypot(spinTheta, spinPhi) > 0.25;
+    } else if (g === 'mark') {
       callbacks.onUp && callbacks.onUp();
     } else if (g === 'pending' && pressCell) {
       // 움직임/길게누름 없이 뗌 = 탭 → 더블탭 감지(상자 열기)로 전달
@@ -961,6 +977,15 @@ function animate() {
 
   // 배경 하늘이 천천히 자연스럽게 회전
   if (skyMesh) skyMesh.rotation.y += dt * 0.012;
+
+  // 관성 회전: 손을 뗀 마지막 축/속도로 계속 (감속 없이, 다음 터치까지)
+  if (spinning && !gesture) {
+    orbit.theta += spinTheta * dt;
+    const np = orbit.phi + spinPhi * dt;
+    if (np <= 0.15 || np >= 1.45) spinPhi = 0; // 상하 한계에 닿으면 세로 회전만 멈춤
+    orbit.phi = Math.max(0.15, Math.min(1.45, np));
+    updateCamera();
+  }
 
   // 레벨 클리어 후: 카메라가 퍼즐을 선회하며 보석 감상 (phi를 살짝 낮춰 정면에서 본다)
   if (celebrating) {
