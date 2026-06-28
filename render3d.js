@@ -163,10 +163,20 @@ export function buildBoard(n, board) {
       const group = new THREE.Group();
       group.position.set(cx, 0, cz);
 
-      // 몸통 — 속이 빈 상자 (바닥 + 네 벽), 스크래치 메탈
+      // 몸통 — 속이 빈 상자 (바닥 + 네 벽), 스크래치 메탈.
+      // 공유 텍스처를 박스마다 복제해 랜덤 회전 + s/t 스케일(0.95~1.05)을 주어
+      // 박스마다 다른 스크래치 패턴이 보이게 한다 (이미지는 source 공유 → 메모리 추가 없음).
       const ud = { r, c };
-      const scr = scratchTexture();
-      const nrm = metalNormalTexture();
+      const variedClone = (t) => {
+        const cl = t.clone();
+        cl.center.set(0.5, 0.5);
+        cl.rotation = Math.random() * Math.PI * 2;
+        cl.repeat.set(0.95 + Math.random() * 0.1, 0.95 + Math.random() * 0.1);
+        cl.needsUpdate = true;
+        return cl;
+      };
+      const scr = variedClone(scratchTexture());
+      const nrm = variedClone(metalNormalTexture());
       const bodyMat = new THREE.MeshPhysicalMaterial({
         color, metalness: 0.7, roughness: 0.48,
         roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.85, 0.85),
