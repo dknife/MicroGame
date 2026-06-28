@@ -510,27 +510,64 @@ function buildEnvironment() {
   pmrem.dispose();
 }
 
-// skybox/skybox.png (3×2 큐브맵 아틀라스, 각 면 512²)을 읽어
-// 배경(scene.background)과 반사/굴절 환경맵으로 사용한다.
+// skybox/skybox.png — 가로 십자(cross) 배치(4열×3행, 검은 패딩, 면마다 크기 약간 다름).
+//   [ .  천장 .  . ]   (1행 2열: 천장)
+//   [ 좌  전  우 후 ]   (2행: 좌/전/우/후)
+//   [ .  바닥 .  . ]   (3행 2열: 바닥)
+// 각 셀에서 검은 배경을 제외한 내용 영역(bbox)만 잘라 정사각으로 정규화 → 큐브맵.
 function loadSkybox() {
   const img = new Image();
   img.onload = () => {
-    const fw = img.width / 3, fh = img.height / 2;
-    // 읽기 순서(좌→우, 위→아래) = three의 큐브 순서 [+X,-X,+Y,-Y,+Z,-Z]
-    const order = [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]];
-    const faces = order.map(([cx, cy]) => {
-      const cv = document.createElement('canvas');
-      cv.width = fw; cv.height = fh;
-      cv.getContext('2d').drawImage(img, cx * fw, cy * fh, fw, fh, 0, 0, fw, fh);
-      return cv;
-    });
+    const W = img.width, H = img.height;
+    const cw = W / 4, ch = H / 3; // 셀 크기 (4열 × 3행)
+    const src = document.createElement('canvas');
+    src.width = W; src.height = H;
+    const sctx = src.getContext('2d');
+    sctx.drawImage(img, 0, 0);
+    const FS = 512; // 정규화된 면 크기
+
+    // 셀(col,row) 안에서 검정이 아닌 내용 bbox를 찾아 정사각 면 캔버스로
+    const faceFromCell = (col, row, rot) => {
+      const x0 = Math.round(col * cw), y0 = Math.round(row * ch);
+      const cwI = Math.round(cw), chI = Math.round(ch);
+      const d = sctx.getImageData(x0, y0, cwI, chI).data;
+      let minx = cwI, miny = chI, maxx = -1, maxy = -1;
+      for (let y = 0; y < chI; y++) {
+        for (let x = 0; x < cwI; x++) {
+          const i = (y * cwI + x) * 4;
+          if (Math.max(d[i], d[i + 1], d[i + 2]) > 20) { // 검정 배경 제외
+            if (x < minx) minx = x; if (x > maxx) maxx = x;
+            if (y < miny) miny = y; if (y > maxy) maxy = y;
+          }
+        }
+      }
+      if (maxx < minx) { minx = 0; miny = 0; maxx = cwI - 1; maxy = chI - 1; } // 전부 검정이면 셀 전체
+      const bw = maxx - minx + 1, bh = maxy - miny + 1;
+      const fc = document.createElement('canvas');
+      fc.width = FS; fc.height = FS;
+      const fctx = fc.getContext('2d');
+      if (rot) { fctx.translate(FS / 2, FS / 2); fctx.rotate(rot); fctx.translate(-FS / 2, -FS / 2); }
+      fctx.drawImage(img, x0 + minx, y0 + miny, bw, bh, 0, 0, FS, FS); // 내용만 정사각으로
+      return fc;
+    };
+
+    // 면별 회전(필요시 조정) — rad
+    const R = { up: 0, down: 0, left: 0, front: 0, right: 0, back: 0 };
+    // three 큐브 순서: [+X, -X, +Y, -Y, +Z, -Z] = [우, 좌, 천장, 바닥, 전, 후]
+    const faces = [
+      faceFromCell(2, 1, R.right), // +X 우
+      faceFromCell(0, 1, R.left),  // -X 좌
+      faceFromCell(1, 0, R.up),    // +Y 천장
+      faceFromCell(1, 2, R.down),  // -Y 바닥
+      faceFromCell(1, 1, R.front), // +Z 전
+      faceFromCell(3, 1, R.back),  // -Z 후
+    ];
     const cube = new THREE.CubeTexture(faces);
     cube.colorSpace = THREE.SRGBColorSpace;
     cube.needsUpdate = true;
     scene.background = cube; // 스카이박스 배경
-    // 같은 큐브맵으로 반사/굴절 환경맵 갱신 (절차 환경맵 대체)
     const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromCubemap(cube).texture;
+    scene.environment = pmrem.fromCubemap(cube).texture; // 반사/굴절도 스카이박스로
     pmrem.dispose();
   };
   img.src = './skybox/skybox.png';
