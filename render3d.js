@@ -27,6 +27,8 @@ const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지
 let scene, camera, renderer, raycaster;
 let dirLight; // 공전하며 금속 표면에 반짝임을 만드는 기본 방향광
 let diamondMap = null, diamondEnv = null; // 보석용 색상 텍스처 / 환경맵 (skybox/diamond.jpg)
+let skyMesh = null;       // 회전하는 배경 구체
+let celebrating = false;  // 레벨 클리어 후 카메라 자동 선회
 let boardGroup;          // 모든 박스를 담는 그룹 (회전/흔들림 적용)
 let boxes = [];          // [r][c] -> 박스 정보 객체
 let size = 0;
@@ -78,7 +80,7 @@ export function initRenderer(host, cbs) {
   canvas.style.touchAction = 'none'; // 터치 드래그가 스크롤 대신 입력이 되도록
   canvas.style.display = 'block';
 
-  camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera = new THREE.PerspectiveCamera(45, 1, 0.1, 300);
 
   // 조명 — 박스 색이 잘 보이도록 보조광을 넉넉히
   scene.add(new THREE.HemisphereLight(0xdce4f5, 0x2a2233, 0.78));
@@ -124,6 +126,7 @@ function onResize() {
 export function buildBoard(n, board) {
   size = n;
   boardData = board;
+  celebrating = false; // 새 판이 만들어지면 선회 종료
   sinkTweens.clear();
   riseTweens.clear();
   emitters.length = 0;
@@ -357,6 +360,12 @@ export function syncState(state) {
 
 export function shake() {
   shakeTime = 0.6;
+}
+
+// 레벨 클리어 후 카메라가 퍼즐을 천천히 선회하며 보석을 감상한다.
+// (사용자가 화면을 만지거나 새 판이 만들어지면 자동 해제)
+export function celebrate() {
+  celebrating = true;
 }
 
 // ---------- 뚜껑 애니메이션 ----------
@@ -636,11 +645,16 @@ function buildProceduralSky() {
   ctx.globalCompositeOperation = 'source-over';
 
   const tex = new THREE.CanvasTexture(cv);
-  tex.mapping = THREE.EquirectangularReflectionMapping;
   tex.colorSpace = THREE.SRGBColorSpace;
-  scene.background = tex;
+  // 회전 가능한 배경: 큰 안쪽 향(BackSide) 구체 메시 (scene.background 대신)
+  const skyMat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, depthWrite: false });
+  skyMesh = new THREE.Mesh(new THREE.SphereGeometry(100, 48, 32), skyMat);
+  skyMesh.renderOrder = -1;
+  scene.add(skyMesh);
+  // 반사/굴절 환경맵 (정적)
+  tex.mapping = THREE.EquirectangularReflectionMapping;
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromEquirectangular(tex).texture; // 반사/굴절도 이 하늘로
+  scene.environment = pmrem.fromEquirectangular(tex).texture;
   pmrem.dispose();
 }
 
@@ -806,6 +820,7 @@ function bindPointer() {
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 && e.button !== 2) return;
     e.preventDefault(); // 텍스트/요소 선택 시작 방지
+    celebrating = false; // 사용자가 만지면 자동 선회 중단
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -923,6 +938,16 @@ function animate() {
     const a = clock.elapsedTime * 0.55;
     dirLight.position.set(Math.cos(a) * 9, 12, Math.sin(a) * 9);
     dirLight.intensity = 1.05 + 0.3 * Math.sin(clock.elapsedTime * 1.7);
+  }
+
+  // 배경 하늘이 천천히 자연스럽게 회전
+  if (skyMesh) skyMesh.rotation.y += dt * 0.012;
+
+  // 레벨 클리어 후: 카메라가 퍼즐을 선회하며 보석 감상 (phi를 살짝 낮춰 정면에서 본다)
+  if (celebrating) {
+    orbit.theta += dt * 0.3;
+    orbit.phi += (0.78 - orbit.phi) * Math.min(1, dt * 1.2);
+    updateCamera();
   }
 
   // 뚜껑: 90도까지 열고 → 뒤로 눕혀 바닥에 놓기 (열기 1.5s / 닫기 0.8s)

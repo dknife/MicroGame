@@ -1,6 +1,6 @@
 'use strict';
 
-import { initRenderer, buildBoard as r3dBuild, syncState, shake as r3dShake } from './render3d.js';
+import { initRenderer, buildBoard as r3dBuild, syncState, shake as r3dShake, celebrate as r3dCelebrate } from './render3d.js';
 
 const MIN_SIZE = 5;
 const MAX_SIZE = 12;
@@ -546,6 +546,7 @@ function onMistake(r, c) {
 function onLevelClear() {
   locked = true;
   playFanfare();
+  r3dCelebrate(); // 카메라가 퍼즐을 선회하며 보석 감상
   bannerMsgEl.textContent = `🎉 보석 ${size}개를 모두 찾았어요!`;
   bannerEl.classList.remove('hidden');
 }
