@@ -29,6 +29,7 @@ let dirLight; // 공전하며 금속 표면에 반짝임을 만드는 기본 방
 let diamondMap = null, diamondEnv = null; // 보석용 색상 텍스처 / 환경맵 (skybox/diamond.jpg)
 let skyMesh = null;       // 회전하는 배경 구체
 let celebrating = false;  // 레벨 클리어 후 카메라 자동 선회
+let paused = false;       // 포커스/가시성 상실 시 렌더 루프 정지
 let boardGroup;          // 모든 박스를 담는 그룹 (회전/흔들림 적용)
 let boxes = [];          // [r][c] -> 박스 정보 객체
 let size = 0;
@@ -107,7 +108,19 @@ export function initRenderer(host, cbs) {
   onResize();
   requestAnimationFrame(onResize);
   setTimeout(onResize, 300);
-  animate();
+
+  // 포커스/가시성을 잃으면 렌더 루프를 멈춰 CPU·GPU를 아끼고, 돌아오면 재개
+  const setPaused = (p) => {
+    if (p === paused) return;
+    paused = p;
+    if (!paused) { clock.getDelta(); animate(); } // 재개: 누적 delta 버리고 루프 재시작
+  };
+  document.addEventListener('visibilitychange', () => setPaused(document.hidden));
+  window.addEventListener('blur', () => setPaused(true));
+  window.addEventListener('focus', () => setPaused(false));
+
+  paused = document.hidden;
+  if (!paused) animate();
 }
 
 function onResize() {
@@ -935,6 +948,7 @@ function bindPointer() {
 // ---------- 루프 ----------
 
 function animate() {
+  if (paused) return; // 멈춤: 다음 프레임을 예약하지 않아 렌더링/계산이 완전히 정지
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
