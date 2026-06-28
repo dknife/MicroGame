@@ -69,10 +69,9 @@ export function initRenderer(host, cbs) {
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.enabled = false; // 바닥 그림자 없음
   renderer.toneMapping = THREE.ACESFilmicToneMapping; // PBR 금속/유리 룩
-  renderer.toneMappingExposure = 1.1;
+  renderer.toneMappingExposure = 1.15;
   container.appendChild(renderer.domElement);
   canvas = renderer.domElement;
   canvas.style.touchAction = 'none'; // 터치 드래그가 스크롤 대신 입력이 되도록
@@ -80,33 +79,15 @@ export function initRenderer(host, cbs) {
 
   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
 
-  // 조명
-  scene.add(new THREE.HemisphereLight(0xb9c4e0, 0x10131c, 0.42)); // 보조광 낮춰 대비↑ (극적)
-  dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
+  // 조명 — 박스 색이 잘 보이도록 보조광을 넉넉히
+  scene.add(new THREE.HemisphereLight(0xdce4f5, 0x2a2233, 0.95));
+  scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+  dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
   dirLight.position.set(6, 12, 8);
-  dirLight.castShadow = true;
-  dirLight.shadow.mapSize.set(2048, 2048);
-  dirLight.shadow.camera.near = 1;
-  dirLight.shadow.camera.far = 60;
-  const d = 14;
-  dirLight.shadow.camera.left = -d;
-  dirLight.shadow.camera.right = d;
-  dirLight.shadow.camera.top = d;
-  dirLight.shadow.camera.bottom = -d;
   scene.add(dirLight);
 
   boardGroup = new THREE.Group();
   scene.add(boardGroup);
-
-  // 바닥 (그림자 받기)
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(200, 200),
-    new THREE.ShadowMaterial({ opacity: 0.18 })
-  );
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.001;
-  ground.receiveShadow = true;
-  scene.add(ground);
 
   buildProceduralSky(); // 신비로운 구름·섬광·연무를 절차적으로 생성 → 배경 + 환경맵
 
@@ -185,14 +166,14 @@ export function buildBoard(n, board) {
       const scr = scratchTexture();
       const nrm = metalNormalTexture();
       const bodyMat = new THREE.MeshPhysicalMaterial({
-        color, metalness: 0.95, roughness: 0.42,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.9, 0.9),
-        envMapIntensity: 1.5, clearcoat: 0.85, clearcoatRoughness: 0.22,
+        color, metalness: 0.45, roughness: 0.5,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
+        envMapIntensity: 0.8, clearcoat: 0.6, clearcoatRoughness: 0.3,
       });
       const wallMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().multiplyScalar(0.85), metalness: 0.95, roughness: 0.5,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.9, 0.9),
-        envMapIntensity: 1.5, clearcoat: 0.85, clearcoatRoughness: 0.22,
+        color: color.clone().multiplyScalar(0.88), metalness: 0.45, roughness: 0.55,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
+        envMapIntensity: 0.8, clearcoat: 0.6, clearcoatRoughness: 0.3,
       });
       const mk = (geo, mat, x, y, z) => {
         const m = new THREE.Mesh(geo, mat);
@@ -213,9 +194,9 @@ export function buildBoard(n, board) {
       const lidPivot = new THREE.Group();
       lidPivot.position.set(0, BASE_H, BOX / 2);
       const lidMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().multiplyScalar(1.08), metalness: 0.95, roughness: 0.4,
-        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.9, 0.9),
-        envMapIntensity: 1.6, clearcoat: 0.9, clearcoatRoughness: 0.2,
+        color: color.clone().multiplyScalar(1.1), metalness: 0.45, roughness: 0.48,
+        roughnessMap: scr, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8),
+        envMapIntensity: 0.85, clearcoat: 0.7, clearcoatRoughness: 0.28,
       });
       const lid = new THREE.Mesh(lidGeo, lidMat);
       lid.position.set(0, LID_H / 2, -BOX / 2);
@@ -518,11 +499,12 @@ function buildProceduralSky() {
     return sum / norm;
   };
   const sstep = (e0, e1, t) => { t = Math.min(1, Math.max(0, (t - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+  const ridge = (n) => { const r = 1 - Math.abs(n * 2 - 1); return r * r; }; // 능선(필라멘트)
 
-  // --- 픽셀별: 베이스 하늘 + 성운(저주파 색안개) + 구름(고주파 뭉게) ---
-  const top = [6, 6, 20], horizon = [22, 16, 44], bottom = [3, 4, 12];
-  const nebMag = [150, 45, 150], nebCyan = [30, 130, 150], nebViolet = [95, 55, 185]; // 성운 색
-  const cloudA = [190, 180, 240], cloudB = [120, 210, 225];                          // 구름 색(밝게)
+  // --- 픽셀별: 깊은 어둠 위에 빛나는 성운(가산) + 능선형 필라멘트 구름 ---
+  const top = [3, 2, 10], horizon = [10, 6, 24], bottom = [1, 1, 6]; // 더 깊은 어둠 (신비)
+  const nebMag = [190, 40, 150], nebViolet = [110, 45, 210], nebCyan = [25, 150, 165]; // 성운 색
+  const wisp = [150, 160, 220]; // 필라멘트(연무) 색
   const data = ctx.createImageData(W, H);
   const px = data.data;
   for (let y = 0; y < H; y++) {
@@ -534,27 +516,45 @@ function buildProceduralSky() {
       const u = x / W;
       let R = br, G = bg, B = bb;
 
-      // 성운: 저주파 색안개를 가산 합성으로 (넓고 부드럽게)
-      const neb = fbm(u, v, 53, 2, 4);
-      const nebAmt = sstep(0.42, 0.85, neb) * 0.9;
-      const hueSel = fbm(u, v, 701, 2, 3);
+      // 성운 1층: 넓은 색안개 (마젠타↔보라↔청록), 가산 글로우
+      const n1 = fbm(u, v, 53, 2, 4);
+      const a1 = sstep(0.4, 0.92, n1);
+      const hue = fbm(u, v, 701, 2, 3);
       let nr, ng, nb;
-      if (hueSel < 0.5) { const t = hueSel * 2; nr = lerp(nebMag[0], nebViolet[0], t); ng = lerp(nebMag[1], nebViolet[1], t); nb = lerp(nebMag[2], nebViolet[2], t); }
-      else { const t = (hueSel - 0.5) * 2; nr = lerp(nebViolet[0], nebCyan[0], t); ng = lerp(nebViolet[1], nebCyan[1], t); nb = lerp(nebViolet[2], nebCyan[2], t); }
-      R += nr * nebAmt; G += ng * nebAmt; B += nb * nebAmt;
+      if (hue < 0.5) { const t = hue * 2; nr = lerp(nebMag[0], nebViolet[0], t); ng = lerp(nebMag[1], nebViolet[1], t); nb = lerp(nebMag[2], nebViolet[2], t); }
+      else { const t = (hue - 0.5) * 2; nr = lerp(nebViolet[0], nebCyan[0], t); ng = lerp(nebViolet[1], nebCyan[1], t); nb = lerp(nebViolet[2], nebCyan[2], t); }
+      R += nr * a1; G += ng * a1; B += nb * a1;
 
-      // 구름: 고주파 fBm, 대비를 크게 잡아 또렷하게
-      const n = fbm(u, v, 17, 5, 5);
-      const ca = sstep(0.48, 0.66, n);          // 좁은 구간에서 빠르게 차오름 → 뭉게구름
-      const nc = fbm(u, v, 911, 5, 3);
-      const cr = lerp(cloudA[0], cloudB[0], nc), cg = lerp(cloudA[1], cloudB[1], nc), cb = lerp(cloudA[2], cloudB[2], nc);
-      R = lerp(R, cr, ca * 0.9); G = lerp(G, cg, ca * 0.9); B = lerp(B, cb, ca * 0.9);
+      // 성운 2층: 능선형 청록 필라멘트 (가는 빛줄기)
+      const a2 = Math.pow(ridge(fbm(u, v, 331, 3, 4)), 1.5) * sstep(0.3, 0.8, n1) * 0.9;
+      R += nebCyan[0] * a2; G += nebCyan[1] * a2; B += nebCyan[2] * a2;
+
+      // 구름/연무: 능선형 고주파 필라멘트 (가산, 은은하게)
+      const a3 = Math.pow(ridge(fbm(u, v, 17, 5, 4)), 2) * 0.7;
+      R += wisp[0] * a3; G += wisp[1] * a3; B += wisp[2] * a3;
 
       const i = (y * W + x) * 4;
       px[i] = Math.min(255, R); px[i + 1] = Math.min(255, G); px[i + 2] = Math.min(255, B); px[i + 3] = 255;
     }
   }
   ctx.putImageData(data, 0, 0);
+
+  // --- 성운 코어: 큰 부드러운 발광 덩어리 몇 개 (초점/신비감) ---
+  ctx.globalCompositeOperation = 'lighter';
+  const coreCols = ['rgba(200,60,180,', 'rgba(90,70,230,', 'rgba(40,180,190,'];
+  for (let i = 0; i < 4; i++) {
+    const cx = Math.random() * W, cy = H * (0.15 + Math.random() * 0.6);
+    const rad = 120 + Math.random() * 220;
+    const base = coreCols[i % coreCols.length];
+    for (const ox of [-W, 0, W]) {
+      const g = ctx.createRadialGradient(cx + ox, cy, 0, cx + ox, cy, rad);
+      g.addColorStop(0, base + '0.33)');
+      g.addColorStop(0.5, base + '0.12)');
+      g.addColorStop(1, base + '0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx + ox, cy, rad, 0, Math.PI * 2); ctx.fill();
+    }
+  }
 
   // --- 별: 작은 점광 (가산), 일부는 글로우/색 있음 ---
   ctx.globalCompositeOperation = 'lighter';
