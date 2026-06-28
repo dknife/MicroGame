@@ -108,7 +108,8 @@ export function initRenderer(host, cbs) {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  buildEnvironment(); // 금속/유리 반사·굴절용 환경맵
+  buildEnvironment(); // 즉시 쓸 절차 환경맵 (스카이박스 로드 전)
+  loadSkybox();       // skybox 이미지를 배경 + 환경맵으로 적용
 
   raycaster = new THREE.Raycaster();
 
@@ -507,6 +508,32 @@ function buildEnvironment() {
   scene.environment = pmrem.fromEquirectangular(tex).texture;
   tex.dispose();
   pmrem.dispose();
+}
+
+// skybox/skybox.png (3×2 큐브맵 아틀라스, 각 면 512²)을 읽어
+// 배경(scene.background)과 반사/굴절 환경맵으로 사용한다.
+function loadSkybox() {
+  const img = new Image();
+  img.onload = () => {
+    const fw = img.width / 3, fh = img.height / 2;
+    // 읽기 순서(좌→우, 위→아래) = three의 큐브 순서 [+X,-X,+Y,-Y,+Z,-Z]
+    const order = [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]];
+    const faces = order.map(([cx, cy]) => {
+      const cv = document.createElement('canvas');
+      cv.width = fw; cv.height = fh;
+      cv.getContext('2d').drawImage(img, cx * fw, cy * fh, fw, fh, 0, 0, fw, fh);
+      return cv;
+    });
+    const cube = new THREE.CubeTexture(faces);
+    cube.colorSpace = THREE.SRGBColorSpace;
+    cube.needsUpdate = true;
+    scene.background = cube; // 스카이박스 배경
+    // 같은 큐브맵으로 반사/굴절 환경맵 갱신 (절차 환경맵 대체)
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromCubemap(cube).texture;
+    pmrem.dispose();
+  };
+  img.src = './skybox/skybox.png';
 }
 
 // ---------- 스크래치 메탈 텍스처 (절차 생성) ----------
