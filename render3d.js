@@ -26,6 +26,7 @@ const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지
 
 let scene, camera, renderer, raycaster;
 let dirLight; // 공전하며 금속 표면에 반짝임을 만드는 기본 방향광
+let diamondMap = null, diamondEnv = null; // 보석용 색상 텍스처 / 환경맵 (skybox/diamond.jpg)
 let boardGroup;          // 모든 박스를 담는 그룹 (회전/흔들림 적용)
 let boxes = [];          // [r][c] -> 박스 정보 객체
 let size = 0;
@@ -90,6 +91,7 @@ export function initRenderer(host, cbs) {
   scene.add(boardGroup);
 
   buildProceduralSky(); // 신비로운 구름·섬광·연무를 절차적으로 생성 → 배경 + 환경맵
+  loadDiamond();        // skybox/diamond.jpg → 보석 색상 텍스처 + 환경맵
 
   raycaster = new THREE.Raycaster();
 
@@ -136,7 +138,7 @@ export function buildBoard(n, board) {
         if (o.geometry) o.geometry.dispose();
         if (o.material) {
           const mats = Array.isArray(o.material) ? o.material : [o.material];
-          for (const m of mats) { if (m.map) m.map.dispose(); m.dispose(); }
+          for (const m of mats) { if (m.map && m.map !== diamondMap) m.map.dispose(); m.dispose(); }
         }
       });
     }
@@ -220,13 +222,14 @@ export function buildBoard(n, board) {
       // 다이아몬드 (열리면 상자 안에서 드러남) — 크라운(윗부분) + 파빌리온(아랫부분)
       const gem = new THREE.Group();
       const gemMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().lerp(new THREE.Color(0xffffff), 0.65),
-        metalness: 0.0, roughness: 0.0,
-        transmission: 1.0, thickness: 0.6, ior: 2.6,  // 굴절 더 강하게
-        specularIntensity: 1.0, envMapIntensity: 1.6,
-        transparent: true, opacity: 0.3,              // 투명도 유지
-        emissive: color.clone().multiplyScalar(0.2),
-        emissiveIntensity: 0.3,
+        color: color.clone().lerp(new THREE.Color(0xffffff), 0.35), // 영역 색으로 톤
+        map: diamondMap || null,        // 다이아 이미지를 색상 텍스처로
+        envMap: diamondEnv || null,     // 다이아 이미지를 환경맵으로 (반사)
+        metalness: 0.25, roughness: 0.08,
+        envMapIntensity: 1.7,
+        clearcoat: 1.0, clearcoatRoughness: 0.06, // 반짝이는 다이아 광택
+        emissive: color.clone().multiplyScalar(0.12),
+        emissiveIntensity: 0.35,
         flatShading: true,
       });
       const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.24, 8), gemMat);
@@ -624,6 +627,25 @@ function buildProceduralSky() {
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromEquirectangular(tex).texture; // 반사/굴절도 이 하늘로
   pmrem.dispose();
+}
+
+// skybox/diamond.jpg를 보석의 색상 텍스처(map) + 환경맵(envMap)으로 로드.
+// 비동기 로드라, 끝나면 이미 생성된 보석 재질에도 적용한다.
+function loadDiamond() {
+  new THREE.TextureLoader().load('./skybox/diamond.jpg', (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    diamondMap = tex;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    diamondEnv = pmrem.fromEquirectangular(tex).texture; // 다이아 이미지를 보석 전용 환경맵으로
+    pmrem.dispose();
+    for (const row of boxes) for (const b of row) {
+      if (b.gemMat) {
+        b.gemMat.map = diamondMap;
+        b.gemMat.envMap = diamondEnv;
+        b.gemMat.needsUpdate = true;
+      }
+    }
+  });
 }
 
 // ---------- 스크래치 메탈 텍스처 (절차 생성) ----------
