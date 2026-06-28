@@ -512,39 +512,68 @@ function buildProceduralSky() {
     const c01 = hash(xa + seed, y0 + 1), c11 = hash(xb + seed, y0 + 1);
     return lerp(lerp(c00, c10, tx), lerp(c01, c11, tx), ty);
   };
-  const fbm = (u, v, seed) => {
-    let a = 0.5, sum = 0, norm = 0, f = 4;
-    for (let o = 0; o < 5; o++) { sum += a * vnoise(u, v, f, seed + o * 131); norm += a; a *= 0.5; f *= 2; }
+  const fbm = (u, v, seed, f0, oct) => {
+    let a = 0.5, sum = 0, norm = 0, f = f0;
+    for (let o = 0; o < oct; o++) { sum += a * vnoise(u, v, f, seed + o * 131); norm += a; a *= 0.5; f *= 2; }
     return sum / norm;
   };
+  const sstep = (e0, e1, t) => { t = Math.min(1, Math.max(0, (t - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
 
-  // --- 픽셀별 베이스 하늘 + 구름 ---
-  const top = [10, 9, 26], horizon = [36, 30, 64], glow = [40, 70, 92], bottom = [6, 8, 20];
-  const cloudA = [150, 140, 220], cloudB = [110, 195, 210]; // 보라/청록 구름
-  const sA = 17, sB = 911;
+  // --- 픽셀별: 베이스 하늘 + 성운(저주파 색안개) + 구름(고주파 뭉게) ---
+  const top = [6, 6, 20], horizon = [22, 16, 44], bottom = [3, 4, 12];
+  const nebMag = [150, 45, 150], nebCyan = [30, 130, 150], nebViolet = [95, 55, 185]; // 성운 색
+  const cloudA = [190, 180, 240], cloudB = [120, 210, 225];                          // 구름 색(밝게)
   const data = ctx.createImageData(W, H);
   const px = data.data;
   for (let y = 0; y < H; y++) {
     const v = y / H;
-    // 세로 그라데이션: 천정(어두운 인디고) → 지평(연무 글로우) → 바닥
     let br, bg, bb;
     if (v < 0.5) { const t = sm(v / 0.5); br = lerp(top[0], horizon[0], t); bg = lerp(top[1], horizon[1], t); bb = lerp(top[2], horizon[2], t); }
     else { const t = sm((v - 0.5) / 0.5); br = lerp(horizon[0], bottom[0], t); bg = lerp(horizon[1], bottom[1], t); bb = lerp(horizon[2], bottom[2], t); }
     for (let x = 0; x < W; x++) {
       const u = x / W;
-      const n = fbm(u, v, sA);            // 구름 밀도
-      const nc = fbm(u, v, sB);           // 구름 색 변화
-      const ca = sm(Math.min(1, Math.max(0, (n - 0.46) * 2.4))); // 뭉게구름 대비
+      let R = br, G = bg, B = bb;
+
+      // 성운: 저주파 색안개를 가산 합성으로 (넓고 부드럽게)
+      const neb = fbm(u, v, 53, 2, 4);
+      const nebAmt = sstep(0.42, 0.85, neb) * 0.9;
+      const hueSel = fbm(u, v, 701, 2, 3);
+      let nr, ng, nb;
+      if (hueSel < 0.5) { const t = hueSel * 2; nr = lerp(nebMag[0], nebViolet[0], t); ng = lerp(nebMag[1], nebViolet[1], t); nb = lerp(nebMag[2], nebViolet[2], t); }
+      else { const t = (hueSel - 0.5) * 2; nr = lerp(nebViolet[0], nebCyan[0], t); ng = lerp(nebViolet[1], nebCyan[1], t); nb = lerp(nebViolet[2], nebCyan[2], t); }
+      R += nr * nebAmt; G += ng * nebAmt; B += nb * nebAmt;
+
+      // 구름: 고주파 fBm, 대비를 크게 잡아 또렷하게
+      const n = fbm(u, v, 17, 5, 5);
+      const ca = sstep(0.48, 0.66, n);          // 좁은 구간에서 빠르게 차오름 → 뭉게구름
+      const nc = fbm(u, v, 911, 5, 3);
       const cr = lerp(cloudA[0], cloudB[0], nc), cg = lerp(cloudA[1], cloudB[1], nc), cb = lerp(cloudA[2], cloudB[2], nc);
-      const k = ca * 0.85;
+      R = lerp(R, cr, ca * 0.9); G = lerp(G, cg, ca * 0.9); B = lerp(B, cb, ca * 0.9);
+
       const i = (y * W + x) * 4;
-      px[i] = lerp(br, cr, k);
-      px[i + 1] = lerp(bg, cg, k);
-      px[i + 2] = lerp(bb, cb, k);
-      px[i + 3] = 255;
+      px[i] = Math.min(255, R); px[i + 1] = Math.min(255, G); px[i + 2] = Math.min(255, B); px[i + 3] = 255;
     }
   }
   ctx.putImageData(data, 0, 0);
+
+  // --- 별: 작은 점광 (가산), 일부는 글로우/색 있음 ---
+  ctx.globalCompositeOperation = 'lighter';
+  const starCount = 700;
+  for (let i = 0; i < starCount; i++) {
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    const b = Math.random();
+    const sz = b > 0.92 ? 1.6 + Math.random() * 1.4 : 0.6 + Math.random() * 0.9;
+    const tint = Math.random();
+    const col = tint < 0.7 ? '255,255,255' : (tint < 0.85 ? '180,210,255' : '255,225,200');
+    ctx.fillStyle = `rgba(${col},${0.3 + b * 0.7})`;
+    ctx.beginPath(); ctx.arc(x, y, sz, 0, Math.PI * 2); ctx.fill();
+    if (sz > 2) { // 밝은 별엔 부드러운 헤일로
+      const g = ctx.createRadialGradient(x, y, 0, x, y, sz * 4);
+      g.addColorStop(0, `rgba(${col},0.5)`); g.addColorStop(1, `rgba(${col},0)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, sz * 4, 0, Math.PI * 2); ctx.fill();
+    }
+  }
 
   // --- 연무: 지평선 부근 가로 글로우 띠 ---
   ctx.globalCompositeOperation = 'lighter';
