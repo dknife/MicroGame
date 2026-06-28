@@ -108,8 +108,7 @@ export function initRenderer(host, cbs) {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  buildEnvironment(); // 즉시 쓸 절차 환경맵 (스카이박스 로드 전)
-  loadSkybox();       // skybox 이미지를 배경 + 환경맵으로 적용
+  buildProceduralSky(); // 신비로운 구름·섬광·연무를 절차적으로 생성 → 배경 + 환경맵
 
   raycaster = new THREE.Raycaster();
 
@@ -487,90 +486,115 @@ function starTexture() {
   return _starTex;
 }
 
-// ---------- 환경맵 (금속/유리 반사·굴절) ----------
-
-function buildEnvironment() {
-  const pmrem = new THREE.PMREMGenerator(renderer);
+// ---------- 절차적 스카이맵 (신비로운 구름 · 섬광 · 연무) ----------
+// 가로로 끊김 없는(주기적) 에퀴렉탱귤러 2:1 텍스처를 만들어
+// 배경(scene.background)과 반사/굴절 환경맵(PMREM)으로 사용한다.
+function buildProceduralSky() {
+  const W = 1024, H = 512;
   const cv = document.createElement('canvas');
-  cv.width = 256; cv.height = 128;
+  cv.width = W; cv.height = H;
   const ctx = cv.getContext('2d');
-  // 위는 밝은 하늘빛, 가운데 밝은 띠(주광), 아래는 어두운 바닥 — 반사에 명암을 준다
-  const g = ctx.createLinearGradient(0, 0, 0, 128);
-  g.addColorStop(0.0, '#cdd6ea');
-  g.addColorStop(0.35, '#9aa7c4');
-  g.addColorStop(0.5, '#ffffff');
-  g.addColorStop(0.65, '#6b7590');
-  g.addColorStop(1.0, '#20242f');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 256, 128);
+
+  // --- 주기적(가로 wrap) 값 노이즈 + fBm ---
+  const hash = (x, y) => {
+    let h = (x * 374761393 + y * 668265263) | 0;
+    h = (h ^ (h >> 13)) * 1274126177 | 0;
+    return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+  };
+  const sm = (t) => t * t * (3 - 2 * t);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const vnoise = (u, v, freq, seed) => {
+    const fx = u * freq, fy = v * freq;
+    const x0 = Math.floor(fx), y0 = Math.floor(fy);
+    const tx = sm(fx - x0), ty = sm(fy - y0);
+    const xa = ((x0 % freq) + freq) % freq, xb = ((x0 + 1) % freq + freq) % freq; // x wrap
+    const c00 = hash(xa + seed, y0), c10 = hash(xb + seed, y0);
+    const c01 = hash(xa + seed, y0 + 1), c11 = hash(xb + seed, y0 + 1);
+    return lerp(lerp(c00, c10, tx), lerp(c01, c11, tx), ty);
+  };
+  const fbm = (u, v, seed) => {
+    let a = 0.5, sum = 0, norm = 0, f = 4;
+    for (let o = 0; o < 5; o++) { sum += a * vnoise(u, v, f, seed + o * 131); norm += a; a *= 0.5; f *= 2; }
+    return sum / norm;
+  };
+
+  // --- 픽셀별 베이스 하늘 + 구름 ---
+  const top = [10, 9, 26], horizon = [36, 30, 64], glow = [40, 70, 92], bottom = [6, 8, 20];
+  const cloudA = [150, 140, 220], cloudB = [110, 195, 210]; // 보라/청록 구름
+  const sA = 17, sB = 911;
+  const data = ctx.createImageData(W, H);
+  const px = data.data;
+  for (let y = 0; y < H; y++) {
+    const v = y / H;
+    // 세로 그라데이션: 천정(어두운 인디고) → 지평(연무 글로우) → 바닥
+    let br, bg, bb;
+    if (v < 0.5) { const t = sm(v / 0.5); br = lerp(top[0], horizon[0], t); bg = lerp(top[1], horizon[1], t); bb = lerp(top[2], horizon[2], t); }
+    else { const t = sm((v - 0.5) / 0.5); br = lerp(horizon[0], bottom[0], t); bg = lerp(horizon[1], bottom[1], t); bb = lerp(horizon[2], bottom[2], t); }
+    for (let x = 0; x < W; x++) {
+      const u = x / W;
+      const n = fbm(u, v, sA);            // 구름 밀도
+      const nc = fbm(u, v, sB);           // 구름 색 변화
+      const ca = sm(Math.min(1, Math.max(0, (n - 0.46) * 2.4))); // 뭉게구름 대비
+      const cr = lerp(cloudA[0], cloudB[0], nc), cg = lerp(cloudA[1], cloudB[1], nc), cb = lerp(cloudA[2], cloudB[2], nc);
+      const k = ca * 0.85;
+      const i = (y * W + x) * 4;
+      px[i] = lerp(br, cr, k);
+      px[i + 1] = lerp(bg, cg, k);
+      px[i + 2] = lerp(bb, cb, k);
+      px[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(data, 0, 0);
+
+  // --- 연무: 지평선 부근 가로 글로우 띠 ---
+  ctx.globalCompositeOperation = 'lighter';
+  const haze = ctx.createLinearGradient(0, H * 0.32, 0, H * 0.7);
+  haze.addColorStop(0, 'rgba(40,70,92,0)');
+  haze.addColorStop(0.5, 'rgba(70,120,140,0.35)');
+  haze.addColorStop(1, 'rgba(40,70,92,0)');
+  ctx.fillStyle = haze;
+  ctx.fillRect(0, H * 0.32, W, H * 0.38);
+
+  // --- 섬광: 밝은 빛 폭발 + 십자 광선 (가장자리는 wrap 복제) ---
+  const flash = (cx, cy, rad, col) => {
+    for (const ox of [-W, 0, W]) {
+      const g = ctx.createRadialGradient(cx + ox, cy, 0, cx + ox, cy, rad);
+      g.addColorStop(0, col);
+      g.addColorStop(0.25, 'rgba(200,235,255,0.5)');
+      g.addColorStop(1, 'rgba(120,180,220,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx + ox, cy, rad, 0, Math.PI * 2); ctx.fill();
+    }
+  };
+  const nFlash = 5 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < nFlash; i++) {
+    const cx = Math.random() * W;
+    const cy = H * (0.12 + Math.random() * 0.5);
+    const rad = 40 + Math.random() * 130;
+    flash(cx, cy, rad, 'rgba(255,255,255,0.95)');
+    // 큰 섬광엔 길쭉한 광선
+    if (rad > 90) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      const lg = ctx.createLinearGradient(-rad * 2.4, 0, rad * 2.4, 0);
+      lg.addColorStop(0, 'rgba(180,220,255,0)');
+      lg.addColorStop(0.5, 'rgba(230,245,255,0.55)');
+      lg.addColorStop(1, 'rgba(180,220,255,0)');
+      ctx.fillStyle = lg;
+      ctx.fillRect(-rad * 2.4, -1.5, rad * 4.8, 3);
+      ctx.fillRect(-1.5, -rad * 1.4, 3, rad * 2.8);
+      ctx.restore();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
   const tex = new THREE.CanvasTexture(cv);
   tex.mapping = THREE.EquirectangularReflectionMapping;
-  scene.environment = pmrem.fromEquirectangular(tex).texture;
-  tex.dispose();
+  tex.colorSpace = THREE.SRGBColorSpace;
+  scene.background = tex;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromEquirectangular(tex).texture; // 반사/굴절도 이 하늘로
   pmrem.dispose();
-}
-
-// skybox/skybox.png — 가로 십자(cross) 배치(4열×3행, 검은 패딩, 면마다 크기 약간 다름).
-//   [ .  천장 .  . ]   (1행 2열: 천장)
-//   [ 좌  전  우 후 ]   (2행: 좌/전/우/후)
-//   [ .  바닥 .  . ]   (3행 2열: 바닥)
-// 각 셀에서 검은 배경을 제외한 내용 영역(bbox)만 잘라 정사각으로 정규화 → 큐브맵.
-function loadSkybox() {
-  const img = new Image();
-  img.onload = () => {
-    const W = img.width, H = img.height;
-    const cw = W / 4, ch = H / 3; // 셀 크기 (4열 × 3행)
-    const src = document.createElement('canvas');
-    src.width = W; src.height = H;
-    const sctx = src.getContext('2d');
-    sctx.drawImage(img, 0, 0);
-    const FS = 512; // 정규화된 면 크기
-
-    // 셀(col,row) 안에서 검정이 아닌 내용 bbox를 찾아 정사각 면 캔버스로
-    const faceFromCell = (col, row, rot) => {
-      const x0 = Math.round(col * cw), y0 = Math.round(row * ch);
-      const cwI = Math.round(cw), chI = Math.round(ch);
-      const d = sctx.getImageData(x0, y0, cwI, chI).data;
-      let minx = cwI, miny = chI, maxx = -1, maxy = -1;
-      for (let y = 0; y < chI; y++) {
-        for (let x = 0; x < cwI; x++) {
-          const i = (y * cwI + x) * 4;
-          if (Math.max(d[i], d[i + 1], d[i + 2]) > 20) { // 검정 배경 제외
-            if (x < minx) minx = x; if (x > maxx) maxx = x;
-            if (y < miny) miny = y; if (y > maxy) maxy = y;
-          }
-        }
-      }
-      if (maxx < minx) { minx = 0; miny = 0; maxx = cwI - 1; maxy = chI - 1; } // 전부 검정이면 셀 전체
-      const bw = maxx - minx + 1, bh = maxy - miny + 1;
-      const fc = document.createElement('canvas');
-      fc.width = FS; fc.height = FS;
-      const fctx = fc.getContext('2d');
-      if (rot) { fctx.translate(FS / 2, FS / 2); fctx.rotate(rot); fctx.translate(-FS / 2, -FS / 2); }
-      fctx.drawImage(img, x0 + minx, y0 + miny, bw, bh, 0, 0, FS, FS); // 내용만 정사각으로
-      return fc;
-    };
-
-    // 면별 회전(필요시 조정) — rad
-    const R = { up: 0, down: 0, left: 0, front: 0, right: 0, back: 0 };
-    // three 큐브 순서: [+X, -X, +Y, -Y, +Z, -Z] = [우, 좌, 천장, 바닥, 전, 후]
-    const faces = [
-      faceFromCell(2, 1, R.right), // +X 우
-      faceFromCell(0, 1, R.left),  // -X 좌
-      faceFromCell(1, 0, R.up),    // +Y 천장
-      faceFromCell(1, 2, R.down),  // -Y 바닥
-      faceFromCell(1, 1, R.front), // +Z 전
-      faceFromCell(3, 1, R.back),  // -Z 후
-    ];
-    const cube = new THREE.CubeTexture(faces);
-    cube.colorSpace = THREE.SRGBColorSpace;
-    cube.needsUpdate = true;
-    scene.background = cube; // 스카이박스 배경
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromCubemap(cube).texture; // 반사/굴절도 스카이박스로
-    pmrem.dispose();
-  };
-  img.src = './skybox/skybox.png';
 }
 
 // ---------- 스크래치 메탈 텍스처 (절차 생성) ----------
