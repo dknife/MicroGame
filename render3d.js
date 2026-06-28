@@ -386,8 +386,8 @@ function applyLid(b) {
     y = BASE_H;
   } else {
     const e = easeInOutCubic((t - P) / (1 - P));
-    rot = Math.PI / 2 + (Math.PI / 2) * e;     // 90도 → 180도(눕힘)
-    y = BASE_H + (LID_H - BASE_H) * e;          // 경첩을 바닥까지 내림
+    rot = Math.PI / 2;            // 90도 자세 유지
+    y = BASE_H * (1 - e);         // 그대로 수직으로 바닥까지 내려옴
   }
   b.lidPivot.rotation.x = rot;
   b.lidPivot.position.y = y;
