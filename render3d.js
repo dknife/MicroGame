@@ -222,14 +222,19 @@ export function buildBoard(n, board) {
       // 다이아몬드 (열리면 상자 안에서 드러남) — 크라운(윗부분) + 파빌리온(아랫부분)
       const gem = new THREE.Group();
       const gemMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().lerp(new THREE.Color(0xffffff), 0.35), // 영역 색으로 톤
+        color: color.clone().lerp(new THREE.Color(0xffffff), 0.45), // 영역색 55% 강도
         map: diamondMap || null,        // 다이아 이미지를 색상 텍스처로
         envMap: diamondEnv || null,     // 다이아 이미지를 환경맵으로 (반사)
-        metalness: 0.25, roughness: 0.08,
-        envMapIntensity: 1.7,
-        clearcoat: 1.0, clearcoatRoughness: 0.06, // 반짝이는 다이아 광택
-        emissive: color.clone().multiplyScalar(0.12),
-        emissiveIntensity: 0.35,
+        metalness: 0.0, roughness: 0.03,
+        transmission: 0.92, thickness: 0.6, ior: 2.4, // 투명 굴절 복원
+        attenuationColor: color.clone().lerp(new THREE.Color(0xffffff), 0.45),
+        attenuationDistance: 1.2,
+        envMapIntensity: 2.0,
+        specularIntensity: 1.0,
+        clearcoat: 1.0, clearcoatRoughness: 0.03,     // 광택 더 높임
+        transparent: true,
+        emissive: color.clone().multiplyScalar(0.1),
+        emissiveIntensity: 0.3,
         flatShading: true,
       });
       const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.24, 8), gemMat);
