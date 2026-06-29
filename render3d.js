@@ -22,7 +22,7 @@ const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
 const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
 const GEM_REST_Y = WALL_T + 0.31;     // 보석이 상자 바닥에 놓인 높이(2.6배 크기 기준)
-const GEM_RISE_Y = BASE_H + 0.7;      // 열리면 떠오르는 높이 (자유 회전해도 상자에 안 닿게 높이)
+const GEM_RISE_Y = BASE_H + 0.45;     // 열리면 떠오르는 높이
 
 let scene, camera, renderer, raycaster;
 let dirLight; // 공전하며 금속 표면에 반짝임을 만드는 기본 방향광
@@ -322,10 +322,9 @@ export function buildBoard(n, board) {
       boxes[r].push({
         group, lidPivot, lid, gem, gemMat, gemLight, sparkles, wrong: false,
         markColor,
-        gemSpin: { // 자유 회전(텀블) 축 속도 — 보석마다 달라 다양한 모습
-          x: (0.3 + Math.random() * 0.8) * (Math.random() < 0.5 ? -1 : 1),
-          y: (0.4 + Math.random() * 0.9) * (Math.random() < 0.5 ? -1 : 1),
-          z: (0.3 + Math.random() * 0.8) * (Math.random() < 0.5 ? -1 : 1),
+        gemSpin: { // Y축 회전 속도 + 살짝 기울임용 위상 (보석마다 약간 다름)
+          y: 1.1 + Math.random() * 0.5,
+          phase: Math.random() * Math.PI * 2,
         },
         lidT: 0, lidOpen: false, // 0=닫힘, 1=완전히 열려 옆에 눕힘
         pickParts: [lid, floor, wallBack, wallFront, wallRight, wallLeft],
@@ -1032,9 +1031,9 @@ function animate() {
   const time = clock.elapsedTime;
   for (const row of boxes) for (const b of row) {
     if (!b.gem.visible) continue;
-    b.gem.rotation.x += b.gemSpin.x * dt; // 자유 회전 (여러 축)
-    b.gem.rotation.y += b.gemSpin.y * dt;
-    b.gem.rotation.z += b.gemSpin.z * dt;
+    b.gem.rotation.y += b.gemSpin.y * dt;                          // Y축 회전
+    b.gem.rotation.x = Math.sin(time * 0.9 + b.gemSpin.phase) * 0.13; // 약간씩 기울임
+    b.gem.rotation.z = Math.sin(time * 0.7 + b.gemSpin.phase * 1.7) * 0.1;
     const pulse = 0.5 + 0.5 * Math.sin(time * 3 + b.reg); // 0~1
     b.gemMat.emissiveIntensity = 0.5 + 0.6 * pulse;
     b.gemLight.intensity = 1.4 + 1.0 * pulse; // 실제 발광
