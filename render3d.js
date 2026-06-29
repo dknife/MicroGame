@@ -21,8 +21,8 @@ const BASE_H = 0.55;     // 박스 몸통 높이
 const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
 const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
-const GEM_REST_Y = WALL_T + 0.24;     // 보석이 상자 바닥에 놓인 높이(2배 크기 기준)
-const GEM_RISE_Y = BASE_H + LID_H;    // 열리면 뚜껑이 있던 높이까지 떠오름
+const GEM_REST_Y = WALL_T + 0.31;     // 보석이 상자 바닥에 놓인 높이(2.6배 크기 기준)
+const GEM_RISE_Y = BASE_H + 0.35;     // 열리면 떠오르는 높이 (큰 보석이 떠 보이게)
 
 let scene, camera, renderer, raycaster;
 let dirLight; // 공전하며 금속 표면에 반짝임을 만드는 기본 방향광
@@ -270,11 +270,11 @@ export function buildBoard(n, board) {
         emissiveIntensity: 0.3,
         flatShading: true,
       });
-      const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.24, 8), gemMat);
+      const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.26, 16, 2), gemMat);
       pavilion.rotation.x = Math.PI; // 뾰족한 끝이 아래로
       gem.add(pavilion);
-      const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.16, 0.09, 8), gemMat);
-      crown.position.y = 0.12 + 0.045; // 거들 위에 얹기
+      const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.16, 0.1, 16, 1), gemMat);
+      crown.position.y = 0.13 + 0.05; // 거들 위에 얹기
       gem.add(crown);
       // 흰색 에지 — 보석 외곽선/면 모서리를 또렷하게
       const edgeMat = new THREE.LineBasicMaterial({
@@ -307,7 +307,7 @@ export function buildBoard(n, board) {
         gem.add(sp);
         sparkles.push({ sprite: sp, phase: Math.random() * Math.PI * 2, speed: 7 + Math.random() * 6 });
       }
-      gem.scale.setScalar(2.0); // 보석 더 크게
+      gem.scale.setScalar(2.6); // 보석 더 크게
       gem.position.set(0, GEM_REST_Y, 0); // 처음엔 상자 바닥에
       gem.visible = false;
       group.add(gem);
