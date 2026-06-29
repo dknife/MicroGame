@@ -49,6 +49,41 @@ h1 {
   background: #aab4c8;
 }
 
+/* 힌트 · 사운드 버튼 */
+#hint-btn {
+  background: #f9c74f;
+  color: #2b2d42;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#hint-btn:hover {
+  background: #ffd866;
+}
+
+#hint-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#sound-btn {
+  background: #3d405b;
+  border: 1px solid #5c677d;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#sound-btn:hover {
+  border-color: #8d99ae;
+}
+
 /* 레벨 클리어 축하 배너 — 보드를 가리지 않고 상단 메뉴 아래에 표시 */
 #banner {
   margin-top: 10px;
@@ -181,20 +216,7 @@ main {
   font-size: 1.1rem;
 }
 
-/* 오답 시 보드 전체 진동 */
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  15% { transform: translateX(-8px); }
-  30% { transform: translateX(8px); }
-  45% { transform: translateX(-6px); }
-  60% { transform: translateX(6px); }
-  75% { transform: translateX(-3px); }
-  90% { transform: translateX(3px); }
-}
-
-#board.shake {
-  animation: shake 0.45s;
-}
+/* 오답 시 보드 진동은 3D 렌더러(render3d.js의 shake())가 처리한다 */
 
 /* 오버레이 */
 #overlay {

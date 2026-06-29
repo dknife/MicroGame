@@ -26,9 +26,16 @@ const GEM_RISE_Y = BASE_H + 0.45;     // 열리면 떠오르는 높이
 
 let scene, camera, renderer, raycaster;
 let dirLight; // 공전하며 금속 표면에 반짝임을 만드는 기본 방향광
+let hemiLight, ambLight; // 반구광 / 환경광 (축하 시 보석·caustic만 남기고 끈다)
 let diamondMap = null, diamondEnv = null; // 보석용 색상 텍스처 / 환경맵 (skybox/diamond.jpg)
 let skyMesh = null;       // 회전하는 배경 구체
 let celebrating = false;  // 레벨 클리어 후 카메라 자동 선회
+// 레벨 클리어 후: 열린 보석들이 판 위로 떠올라 원형 고리를 이루고, 고리째 함께 회전한다.
+let ringActive = false, ringT = 0, ringAngle = 0, ringR = 0, ringY = 0;
+let ringGems = [];        // [{ b, base, from(Vector3), cx, cz, spot? }]
+const MAX_CAUSTICS = 6;   // 동시에 투영하는 굴절광 스포트라이트 상한 (셰이더 varying 한계 회피)
+let celebDark = 0;        // 축하 암전 정도(0=평소, 1=보석/caustic만). 분석광·박스 반사를 끈다.
+let dimMats = [];         // [{ mat, base }] 암전 시 envMapIntensity를 낮출 박스 머티리얼들
 let paused = false;       // 포커스/가시성 상실 시 렌더 루프 정지
 // 관성 회전: 손을 떼면 마지막 축/속도(rad/s)로 계속 돈다 (다음 터치까지)
 let spinning = false, spinTheta = 0, spinPhi = 0, lastMoveT = 0;
@@ -62,6 +69,7 @@ const sinkTweens = new Map();  // boxKey -> 박스 가라앉기 트윈
 const riseTweens = new Map();  // boxKey -> 보석 떠오르기 트윈
 const emitters = [];           // 오답 박스의 지속 연기 방출기 [{ b, acc }]
 const smokes = [];             // 활성 연기 파티클 그룹
+const hints = [];              // 힌트 강조 효과 [{ sprite, group, t, dur }]
 let shakeTime = 0;             // 남은 흔들림 시간
 const clock = new THREE.Clock();
 
@@ -86,8 +94,10 @@ export function initRenderer(host, cbs) {
   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 300);
 
   // 조명 — 박스 색이 잘 보이도록 보조광을 넉넉히
-  scene.add(new THREE.HemisphereLight(0xdce4f5, 0x2a2233, 0.78));
-  scene.add(new THREE.AmbientLight(0xffffff, 0.18));
+  hemiLight = new THREE.HemisphereLight(0xdce4f5, 0x2a2233, 0.78);
+  scene.add(hemiLight);
+  ambLight = new THREE.AmbientLight(0xffffff, 0.18);
+  scene.add(ambLight);
   dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
   dirLight.position.set(6, 12, 8);
   scene.add(dirLight);
@@ -136,15 +146,60 @@ function onResize() {
   camera.updateProjectionMatrix();
 }
 
+// 라운드 브릴리언트 컷 보석 지오메트리 — 테이블(윗면) + 크라운 facet + 스캘럽 거들 +
+// 컬렛으로 수렴하는 파빌리온 facet. flatShading과 함께 쓰면 삼각형마다 독립 면으로 반짝인다.
+// R = 거들 반지름, MAIN = 주 facet 수(8 = 고전적 라운드 브릴리언트).
+function brilliantCutGeometry(R, MAIN = 8) {
+  const rt = 0.56 * R;   // 테이블 코너 반지름
+  const rv = 0.92 * R;   // 거들 골(밸리)이 안으로 들어가는 반지름 (스캘럽)
+  const hc = 0.34 * R;   // 크라운 높이 (거들 위)
+  const pd = 0.86 * R;   // 파빌리온 깊이 (거들 아래 → 컬렛)
+  const gh = 0.025 * R;  // 거들 절반 두께 (피크↑/골↓)
+
+  const T = [], H = [], L = []; // 테이블 코너 / 거들 피크 / 거들 골
+  for (let i = 0; i < MAIN; i++) {
+    const a = (i / MAIN) * Math.PI * 2;          // 코너·피크 각도
+    const va = ((i + 0.5) / MAIN) * Math.PI * 2; // 골 각도(코너 사이)
+    T.push([Math.cos(a) * rt, hc, Math.sin(a) * rt]);
+    H.push([Math.cos(a) * R, gh, Math.sin(a) * R]);
+    L.push([Math.cos(va) * rv, -gh, Math.sin(va) * rv]);
+  }
+  const C = [0, -pd, 0]; // 컬렛 (뾰족점)
+  const tableC = [0, hc, 0];
+
+  const pos = [];
+  const tri = (a, b, c) => pos.push(...a, ...b, ...c);
+  for (let i = 0; i < MAIN; i++) {
+    const j = (i + 1) % MAIN;
+    tri(tableC, T[i], T[j]);   // 테이블 (윗면 부채꼴)
+    tri(T[i], H[i], L[i]);     // 크라운: 베젤 오른쪽 반 (코너→피크→골)
+    tri(T[i], L[i], T[j]);     // 크라운: 스타 (테이블 모서리→골)
+    tri(T[j], L[i], H[j]);     // 크라운: 베젤 왼쪽 반 (다음 코너→골→피크)
+    tri(H[i], C, L[i]);        // 파빌리온: 피크→컬렛→골
+    tri(L[i], C, H[j]);        // 파빌리온: 골→컬렛→다음 피크
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
 // ---------- 보드 생성 ----------
 
 export function buildBoard(n, board) {
   size = n;
   boardData = board;
   celebrating = false; // 새 판이 만들어지면 선회 종료
+  clearCaustics();     // 굴절광 스포트라이트 해제
+  ringActive = false; ringGems = []; ringT = 0; ringAngle = 0; // 보석 고리도 해제
+  celebDark = 0; dimMats = []; // 암전 해제 (새 박스는 처음부터 밝게)
+  if (hemiLight) hemiLight.intensity = 0.78;
+  if (ambLight) ambLight.intensity = 0.18;
   sinkTweens.clear();
   riseTweens.clear();
   emitters.length = 0;
+  hints.length = 0; // 힌트 스프라이트는 박스 그룹과 함께 아래에서 dispose됨
   for (const g of smokes) boardGroup.remove(g.group);
   smokes.length = 0;
 
@@ -255,65 +310,52 @@ export function buildBoard(n, board) {
       // 다이아몬드 (열리면 상자 안에서 드러남) — 크라운(윗부분) + 파빌리온(아랫부분)
       const gem = new THREE.Group();
       const gemMat = new THREE.MeshPhysicalMaterial({
-        color: color.clone().lerp(new THREE.Color(0xffffff), 0.45), // 영역색 55% 강도
+        color: color.clone().lerp(new THREE.Color(0xffffff), 0.58), // 더 옅은 색 → 맑음
         map: diamondMap || null,        // 다이아 이미지를 색상 텍스처로
         envMap: diamondEnv || null,     // 다이아 이미지를 환경맵으로 (반사)
-        metalness: 0.0, roughness: 0.03,
-        transmission: 0.92, thickness: 0.6, ior: 2.4, // 투명 굴절 복원
-        attenuationColor: color.clone().lerp(new THREE.Color(0xffffff), 0.45),
-        attenuationDistance: 1.2,
+        metalness: 0.0, roughness: 0.02,
+        transmission: 1.0, thickness: 0.3, ior: 2.4, // 거의 완전 투명 굴절
+        attenuationColor: color.clone().lerp(new THREE.Color(0xffffff), 0.55),
+        attenuationDistance: 4.0,
         envMapIntensity: 2.0,
         specularIntensity: 1.0,
         clearcoat: 1.0, clearcoatRoughness: 0.03,     // 광택 더 높임
         transparent: true,
+        side: THREE.DoubleSide, // 안쪽 facet도 비쳐 굴절되도록
         emissive: color.clone().multiplyScalar(0.1),
         emissiveIntensity: 0.3,
         flatShading: true,
       });
-      // 파빌리온 — 잘린 원뿔: 아랫면을 짧게 절단해 작은 평평한 컬렛(culet)을 둠
-      const pavilion = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.04, 0.26, 16, 2), gemMat);
-      gem.add(pavilion);
-      const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.16, 0.1, 16, 1), gemMat);
-      crown.position.y = 0.165 + 0.05; // 거들 띠 위에 얹기
-      gem.add(crown);
-      // 거들 — 옆면에 세로 16면을 가진 깎인 띠 (옆 부분도 컷)
-      const girdle = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.07, 16, 1), gemMat);
-      girdle.position.y = 0.13;
-      gem.add(girdle);
-      // 흰색 에지 — 보석 외곽선/면 모서리를 또렷하게
+      // 라운드 브릴리언트 컷 — 테이블·크라운·파빌리온 facet을 한 메시로 (컬렛으로 수렴)
+      const gemGeo = brilliantCutGeometry(0.16);
+      gem.add(new THREE.Mesh(gemGeo, gemMat));
+      // 흰색 에지 — 모든 facet 모서리를 또렷하게 (지오메트리 공유 → traverse가 함께 dispose)
       const edgeMat = new THREE.LineBasicMaterial({
-        color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false,
+        color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false,
       });
-      const pavEdges = new THREE.LineSegments(new THREE.EdgesGeometry(pavilion.geometry), edgeMat);
-      gem.add(pavEdges);
-      const crownEdges = new THREE.LineSegments(new THREE.EdgesGeometry(crown.geometry), edgeMat);
-      crownEdges.position.y = crown.position.y;
-      gem.add(crownEdges);
-      const girdleEdges = new THREE.LineSegments(new THREE.EdgesGeometry(girdle.geometry), edgeMat);
-      girdleEdges.position.y = girdle.position.y;
-      gem.add(girdleEdges);
+      gem.add(new THREE.LineSegments(new THREE.EdgesGeometry(gemGeo, 1), edgeMat));
       // 보석이 실제로 빛을 내도록 점광원 — 열리면(gem.visible) 함께 켜진다
       const gemLight = new THREE.PointLight(
         color.clone().lerp(new THREE.Color(0xffffff), 0.4), 0, 2.6, 2
       );
       gemLight.position.set(0, 0.2, 0);
       gem.add(gemLight);
-      // 반짝이 스파클 (반짝반짝 빛남) — 박스 색으로, 더 크게·더 자주 깜빡인다
+      // 반짝이 스파클 — 보석 표면 가까이 모으고 작고 날카롭게 깜빡인다
       const sparkles = [];
-      const SPARKLE_N = 6;
+      const SPARKLE_N = 8;
       for (let i = 0; i < SPARKLE_N; i++) {
         const sp = new THREE.Sprite(new THREE.SpriteMaterial({
           map: starTexture(), color: color.clone(), transparent: true, opacity: 0,
           blending: THREE.AdditiveBlending, depthWrite: false,
         }));
         const ang = (i / SPARKLE_N) * Math.PI * 2 + Math.random();
-        const rad = 0.1 + Math.random() * 0.18;
-        sp.position.set(Math.cos(ang) * rad, 0.05 + Math.random() * 0.28, Math.sin(ang) * rad);
-        sp.scale.setScalar(0.12);
+        const rad = 0.04 + Math.random() * 0.09; // 보석에 바싹 붙임
+        sp.position.set(Math.cos(ang) * rad, 0.0 + Math.random() * 0.18, Math.sin(ang) * rad);
+        sp.scale.setScalar(0.07); // 작게 → 날카로운 점
         gem.add(sp);
         sparkles.push({ sprite: sp, phase: Math.random() * Math.PI * 2, speed: 7 + Math.random() * 6 });
       }
-      gem.scale.setScalar(2.6); // 보석 더 크게
+      gem.scale.setScalar(3.0); // 보석 크게 (브릴리언트 컷은 얕아서 살짝 키움)
       gem.position.set(0, GEM_REST_Y, 0); // 처음엔 상자 바닥에
       gem.visible = false;
       group.add(gem);
@@ -393,11 +435,95 @@ export function shake() {
   shakeTime = 0.6;
 }
 
+// 힌트: 해당 박스 위에 빛나는 별이 잠깐 맥동하며 "여기를 봐" 표시 (열어주진 않음)
+export function highlight(r, c) {
+  if (!boxes.length || !boxes[r] || !boxes[r][c]) return;
+  const b = boxes[r][c];
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: starTexture(), color: 0xfff2a8, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  sprite.position.set(0, BASE_H + 0.7, 0);
+  sprite.scale.setScalar(0.6);
+  b.group.add(sprite);
+  hints.push({ sprite, group: b.group, t: 0, dur: 2.4 });
+}
+
 // 레벨 클리어 후 카메라가 퍼즐을 천천히 선회하며 보석을 감상한다.
 // (사용자가 화면을 만지거나 새 판이 만들어지면 자동 해제)
 export function celebrate() {
   celebrating = true;
   spinning = false;
+  startGemRing();
+}
+
+// 열린 보석들을 판 중앙 위쪽의 원형 고리로 모은다. 보드-로컬 좌표로 목표를 잡아
+// (보드가 흔들리거나 회전해도 함께 따라가도록) 각 보석의 박스 그룹 오프셋만큼 보정한다.
+function startGemRing() {
+  clearCaustics();
+  ringGems = [];
+  const gems = [];
+  for (const row of boxes) for (const b of row) if (b.gem.visible && !b.wrong) gems.push(b);
+  if (!gems.length) return;
+  ringR = Math.max(1.3, (size - 1) * 0.42); // 판 크기에 비례한 고리 반지름
+  ringY = GEM_RISE_Y + 0.7;                  // 판 위로 조금 더 떠오름
+  const N = gems.length;
+  // 굴절광 스포트라이트는 셰이더 varying 한계(큰 판에서 검은 화면 위험)를 피하려 수를 제한하고
+  // 고리에 고르게 분포시킨다. 모든 보석은 고리를 이루되, 일부만 caustic을 투영한다.
+  const M = Math.min(N, MAX_CAUSTICS);
+  const causticIdx = new Set();
+  for (let k = 0; k < M; k++) causticIdx.add(Math.round((k * N) / M) % N);
+  gems.forEach((b, i) => {
+    riseTweens.delete(lidKey(b)); // 떠오르기 트윈과 위치 충돌 방지
+    const entry = {
+      b,
+      base: (i / N) * Math.PI * 2,   // 고리에서의 시작 각도
+      from: b.gem.position.clone(),  // 현재(상자 안) 위치에서 부드럽게 모임
+      cx: b.group.position.x,
+      cz: b.group.position.z,
+      cSpin: 0.3 + Math.random() * 0.5,     // 광무늬 회전 속도
+      cPhase: Math.random() * Math.PI * 2,  // 일렁임 위상
+    };
+    if (causticIdx.has(i)) {
+      // 굴절광(caustic): 보석 위에서 아래로 비추는 스포트라이트가 caustic 텍스처를
+      // 쿠키(gobo)로 투영 → 빛이 박스 표면에 드리워지듯 떨어진다. 그림자는 끄고
+      // 콘 감쇠가 원형 마스크 역할을 한다. 무늬 회전은 shadow 카메라 up으로 준다.
+      // 거의 흰빛(보석 색 힌트만) → 쿠키의 무지갯빛(iridescent)이 묻히지 않고 박스에 그대로 얹힘
+      const col = new THREE.Color(REGION_COLORS[b.reg % REGION_COLORS.length])
+        .lerp(new THREE.Color(0xffffff), 0.85);
+      const spot = new THREE.SpotLight(col, 0, 0, 0.62, 0.55, 0); // 강도는 매 프레임 갱신
+      spot.map = causticTexture(); // 공유 쿠키 텍스처 (회전은 라이트별 shadow.camera.up)
+      spot.castShadow = false;
+      spot.position.set(b.group.position.x, ringY, b.group.position.z);
+      spot.target.position.set(b.group.position.x, BASE_H, b.group.position.z);
+      boardGroup.add(spot);
+      boardGroup.add(spot.target);
+      entry.spot = spot;
+    }
+    ringGems.push(entry);
+  });
+  // 암전 대상: 박스 표면 머티리얼(몸통·벽·뚜껑)의 환경 반사를 끌 수 있게 수집.
+  // 보석 머티리얼(b.gemMat)은 자체 envMap이라 제외 → 보석은 계속 빛난다.
+  dimMats = [];
+  for (const row of boxes) for (const b of row) {
+    b.group.traverse((o) => {
+      const m = o.material;
+      if (m && m.isMeshStandardMaterial && m !== b.gemMat) {
+        dimMats.push({ mat: m, base: m.envMapIntensity });
+      }
+    });
+  }
+  ringT = 0;
+  ringActive = true;
+}
+
+// 굴절광 스포트라이트 + 타깃 제거 (쿠키 텍스처는 공유 싱글톤이라 유지)
+function clearCaustics() {
+  for (const rg of ringGems) {
+    if (!rg.spot) continue;
+    boardGroup.remove(rg.spot.target);
+    boardGroup.remove(rg.spot);
+  }
 }
 
 // ---------- 뚜껑 애니메이션 ----------
@@ -814,6 +940,69 @@ function smokeTexture() {
   return _smokeTex;
 }
 
+// 굴절광(caustic) 무늬 — 휘어진 빛줄기 그물망 + 교차 노드를 blur로 부드럽게 번지게 한다.
+// 같은 무늬를 무지개 스펙트럼 색으로 한 축을 따라 점점 어긋나게(프리즘 분산) 여러 번 가산 합성 →
+// 코어는 흰빛, 둘레는 매끄러운 무지갯빛(iridescent) 헤일로가 되는 부드러운 광무늬.
+let _causticTex = null;
+function causticTexture() {
+  if (_causticTex) return _causticTex;
+  const S = 256;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, S, S); // 검정 = 가산에서 투명
+
+  // 무늬(곡선/노드)를 먼저 한 번 정해 세 채널이 같은 형상을 공유하게 한다
+  const curves = [];
+  for (let i = 0; i < 70; i++) {
+    curves.push({
+      a: Math.random() * Math.PI * 2,
+      cx: Math.random() * S, cy: Math.random() * S,
+      len: 40 + Math.random() * 130, bend: (Math.random() - 0.5) * 130,
+    });
+  }
+  const nodes = [];
+  for (let i = 0; i < 36; i++) {
+    nodes.push({ x: Math.random() * S, y: Math.random() * S, r: 2.5 + Math.random() * 4 });
+  }
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.filter = 'blur(5px)';   // 선이 아닌 부드럽게 번진 빛으로
+  ctx.lineWidth = 3.2;
+  ctx.lineCap = 'round';
+  // 프리즘 분산: 같은 무늬를 무지개 색으로 한 축을 따라 점점 어긋나게 여러 번 그린다.
+  // 가산 합성 + blur로 코어는 흰빛, 둘레는 매끄러운 무지갯빛(iridescent) 헤일로가 된다.
+  const STEPS = 8;
+  const spread = 15;          // 색 분산 폭(px) — 클수록 무지갯빛 강함
+  const dirA = 0.6, cosD = Math.cos(dirA), sinD = Math.sin(dirA); // 분산 방향
+  for (let s = 0; s < STEPS; s++) {
+    const f = s / (STEPS - 1);
+    const hue = 285 * (1 - f);          // 285(보라) → 0(빨강) 스펙트럼
+    const off = (f - 0.5) * 2 * spread; // -spread..+spread
+    const dx = off * cosD, dy = off * sinD;
+    const col = `hsla(${hue}, 100%, 62%, 0.4)`;
+    ctx.strokeStyle = col;
+    ctx.fillStyle = col;
+    for (const cu of curves) {
+      const nx = Math.cos(cu.a), ny = Math.sin(cu.a), px = -ny, py = nx;
+      ctx.beginPath();
+      ctx.moveTo(cu.cx - nx * cu.len + dx, cu.cy - ny * cu.len + dy);
+      ctx.quadraticCurveTo(
+        cu.cx + px * cu.bend + dx, cu.cy + py * cu.bend + dy,
+        cu.cx + nx * cu.len + dx, cu.cy + ny * cu.len + dy,
+      );
+      ctx.stroke();
+    }
+    for (const nd of nodes) {
+      ctx.beginPath(); ctx.arc(nd.x + dx, nd.y + dy, nd.r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.filter = 'none';
+  _causticTex = new THREE.CanvasTexture(cv);
+  _causticTex.colorSpace = THREE.SRGBColorSpace;
+  return _causticTex;
+}
+
 // ---------- 카메라 / 입력 ----------
 
 function updateCamera() {
@@ -978,11 +1167,19 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  // 기본 조명을 공전 + 미세 맥동 → 금속 표면 하이라이트가 움직이며 반짝인다
+  // 축하 암전: 고리가 활성화되면 분석광(반구·환경·방향)과 박스의 환경 반사를 서서히 꺼
+  // 박스를 어둡게 만들고, 보석 자체광(gemLight)과 caustic 스포트라이트만 남긴다.
+  celebDark += ((ringActive ? 1 : 0) - celebDark) * Math.min(1, dt * 2.2);
+  const lit = 1 - celebDark;
+  if (hemiLight) hemiLight.intensity = 0.78 * lit;
+  if (ambLight) ambLight.intensity = 0.18 * lit;
+  for (const dm of dimMats) dm.mat.envMapIntensity = dm.base * lit;
+
+  // 기본 조명을 공전 + 미세 맥동 → 금속 표면 하이라이트가 움직이며 반짝인다 (암전 시 lit로 감쇠)
   if (dirLight) {
     const a = clock.elapsedTime * 0.55;
     dirLight.position.set(Math.cos(a) * 9, 12, Math.sin(a) * 9);
-    dirLight.intensity = 1.05 + 0.3 * Math.sin(clock.elapsedTime * 1.7);
+    dirLight.intensity = (1.05 + 0.3 * Math.sin(clock.elapsedTime * 1.7)) * lit;
   }
 
   // 배경 하늘이 천천히 자연스럽게 회전
@@ -1027,6 +1224,39 @@ function animate() {
     }
   }
 
+  // 레벨 클리어 후: 보석들이 판 위 원형 고리로 모여 고리째 함께 회전한다.
+  // (각 보석의 자유 회전·반짝임은 아래 루프에서 그대로 유지)
+  if (ringActive && ringGems.length) {
+    ringT = Math.min(1, ringT + dt / 1.4); // ~1.4초에 걸쳐 원형으로 모임
+    ringAngle += dt * 0.45;                // 고리 전체가 천천히 함께 회전
+    const e = easeOut(ringT);
+    const ct = clock.elapsedTime;
+    for (const rg of ringGems) {
+      const a = rg.base + ringAngle;
+      // 보드-로컬 목표(고리 위 점)에서 박스 그룹 오프셋을 빼 보석의 로컬 위치로
+      const tx = Math.cos(a) * ringR - rg.cx;
+      const tz = Math.sin(a) * ringR - rg.cz;
+      rg.b.gem.position.set(
+        rg.from.x + (tx - rg.from.x) * e,
+        rg.from.y + (ringY - rg.from.y) * e,
+        rg.from.z + (tz - rg.from.z) * e,
+      );
+      // 굴절광: 보석 바로 아래를 따라 박스에 투영. 보석을 따라 이동하고,
+      // 강도는 페이드인 + 일렁임, 쿠키 무늬는 shadow 카메라 up 회전으로 돈다.
+      if (rg.spot) {
+        const wx = rg.cx + rg.b.gem.position.x;
+        const wz = rg.cz + rg.b.gem.position.z;
+        rg.spot.position.set(wx, ringY, wz);
+        rg.spot.target.position.set(wx, BASE_H, wz);
+        const flick = 0.6 + 0.4 * Math.sin(ct * 4 + rg.cPhase);
+        rg.spot.intensity = 20 * e * flick; // 박스에 더 밝게 얹히는 굴절광 (blur로 약해진 만큼 보강)
+        // 쿠키 회전을 보석 자전과 동기화 → 보석과 같이 빠르게 돈다
+        const roll = rg.b.gem.rotation.y + rg.cPhase;
+        rg.spot.shadow.camera.up.set(Math.cos(roll), 0, Math.sin(roll)); // 쿠키 회전
+      }
+    }
+  }
+
   // 보석: 천천히 회전 + 글로우 맥동 + 스파클 반짝임
   const time = clock.elapsedTime;
   for (const row of boxes) for (const b of row) {
@@ -1039,9 +1269,9 @@ function animate() {
     b.gemLight.intensity = 1.4 + 1.0 * pulse; // 실제 발광
     for (const sp of b.sparkles) {
       const tw = Math.sin(time * sp.speed + sp.phase);
-      const o = Math.max(0, tw);
+      const o = Math.pow(Math.max(0, tw), 2.2); // 가파른 피크 → 날카로운 섬광
       sp.sprite.material.opacity = o;
-      const sc = 0.1 + 0.32 * o;
+      const sc = 0.035 + 0.13 * o; // 작고 또렷한 점
       sp.sprite.scale.set(sc, sc, sc);
     }
   }
@@ -1074,6 +1304,23 @@ function animate() {
       boardGroup.remove(sm.group);
       sm.group.traverse((o) => { if (o.material) o.material.dispose(); });
       smokes.splice(i, 1);
+    }
+  }
+
+  // 힌트 강조: 별이 위아래로 떠다니며 3번 정도 맥동하다 사라진다
+  for (let i = hints.length - 1; i >= 0; i--) {
+    const h = hints[i];
+    h.t += dt;
+    const k = h.t / h.dur;
+    const pulse = Math.max(0, Math.sin(h.t * 7));
+    h.sprite.material.opacity = pulse * (1 - k) * 0.95;
+    const sc = 0.45 + 0.35 * pulse;
+    h.sprite.scale.set(sc, sc, sc);
+    h.sprite.position.y = BASE_H + 0.7 + Math.sin(h.t * 3) * 0.12;
+    if (h.t >= h.dur) {
+      h.group.remove(h.sprite);
+      h.sprite.material.dispose();
+      hints.splice(i, 1);
     }
   }
 

@@ -1,26 +1,15 @@
 'use strict';
 
-import { initRenderer, buildBoard as r3dBuild, syncState, shake as r3dShake, celebrate as r3dCelebrate } from './render3d.js';
+import { initRenderer, buildBoard as r3dBuild, syncState, shake as r3dShake, celebrate as r3dCelebrate, highlight as r3dHighlight } from './render3d.js';
 
 const MIN_SIZE = 5;
 const MAX_SIZE = 12;
 const SAVE_KEY = 'myMeowDoku.save';
+const SOUND_KEY = 'pandora.sound';
 const MAX_MISTAKES = 3;
 const DBLCLICK_DELAY = 250; // ms: 싱글클릭 확정 대기 시간
 
-// 영역마다 서로 다른 고양이 — 카드를 뒤집으면 그 영역의 고양이가 나온다 (최대 12)
-const CAT_FACES = [
-  '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿', '😾', '🐱',
-  '🐈', '🐈‍⬛',
-];
-
-// 색 영역(같은 색 = 연결된 카드 묶음) 뒷면 색상 — 최대 12개
-const REGION_COLORS = [
-  '#f9c74f', '#90be6d', '#f8961e', '#43aa8b', '#577590',
-  '#f94144', '#c77dff', '#4cc9f0', '#ff99c8', '#a98467',
-  '#f72585', '#e0e1dd',
-];
-
+// 영역 색은 렌더러(render3d.js)가 단일 출처로 보유한다 — 로직에는 색이 필요 없다.
 // 칸 상태 mark: 'none' | 'paw'(사용자/자동 마킹) | 'wrong'(오답 붉은 마킹)
 let level = 1;
 let size = MIN_SIZE;
@@ -34,6 +23,8 @@ let drag = null;           // { mode:'paw'|'none', startR, startC, moved, visite
 let suppressClick = false; // 드래그 직후 발생하는 click 이벤트 무시
 
 const boardEl = document.getElementById('board');
+const hintBtnEl = document.getElementById('hint-btn');
+const soundBtnEl = document.getElementById('sound-btn');
 const levelEl = document.getElementById('level-display');
 const livesEl = document.getElementById('lives-display');
 const overlayEl = document.getElementById('overlay');
@@ -302,8 +293,10 @@ function resetRound() {
 // ---------- 효과음 (Web Audio 합성 — 외부 파일 불필요) ----------
 
 let audioCtx = null;
+let soundOn = loadSound(); // 사운드 on/off (localStorage에 저장)
 
 function getAudio() {
+  if (!soundOn) return null; // 음소거 시 오디오 컨텍스트를 만들지/깨우지 않음
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return null;
   if (!audioCtx) audioCtx = new AC();
@@ -316,6 +309,25 @@ function getAudio() {
 document.addEventListener('mousedown', getAudio, { once: true });
 document.addEventListener('touchstart', getAudio, { once: true });
 document.addEventListener('pointerdown', getAudio, { once: true });
+
+function loadSound() {
+  try {
+    return localStorage.getItem(SOUND_KEY) !== 'off';
+  } catch (e) { return true; }
+}
+
+function updateSoundBtn() {
+  soundBtnEl.textContent = soundOn ? '🔊' : '🔇';
+  soundBtnEl.setAttribute('aria-label', soundOn ? '소리 끄기' : '소리 켜기');
+}
+
+soundBtnEl.addEventListener('click', () => {
+  soundOn = !soundOn;
+  try { localStorage.setItem(SOUND_KEY, soundOn ? 'on' : 'off'); } catch (e) { /* 무시 */ }
+  updateSoundBtn();
+  if (soundOn) getAudio(); // 켤 때 제스처 컨텍스트 안에서 오디오 잠금 해제
+});
+updateSoundBtn();
 
 // 뽁 — 물방울 터지는 소리 (마킹: 높은 음, 해제: 낮은 음, 피치 약간 랜덤)
 function playPop(erase) {
@@ -523,6 +535,64 @@ function autoMarkAround(r, c) {
   }
 }
 
+// ---------- 힌트 ----------
+// 유일해가 보장되므로 "다음에 열 보석" 한 곳을 항상 정확히 짚어줄 수 있다.
+// 우선 논리적으로 확정되는 칸(어느 행/열/영역에서 보석이 유일 후보)을 찾고,
+// 없으면 가장 작은 영역의 보석을 짚어준다 (둘 다 실제 보석이라 오답을 부르지 않음).
+function findHintCell() {
+  const n = size;
+  const cand = (r, c) => !cells[r][c].revealed && cells[r][c].mark === 'none';
+
+  // 그룹의 칸 목록에서 진짜 보석이 유일한 후보로 남았으면 보석 좌표 반환
+  const lone = (groupCells, gemR, gemC) => {
+    if (cells[gemR][gemC].revealed) return null;
+    let count = 0;
+    for (const [r, c] of groupCells) if (cand(r, c)) count++;
+    return count === 1 && cand(gemR, gemC) ? [gemR, gemC] : null;
+  };
+
+  // 1) 행 / 열에서 확정되는 보석
+  for (let r = 0; r < n; r++) {
+    const row = [];
+    for (let c = 0; c < n; c++) row.push([r, c]);
+    const h = lone(row, r, board.diamondCols[r]);
+    if (h) return h;
+  }
+  for (let c = 0; c < n; c++) {
+    const col = [];
+    for (let r = 0; r < n; r++) col.push([r, c]);
+    const h = lone(col, board.diamondCols.indexOf(c), c);
+    if (h) return h;
+  }
+
+  // 영역별 멤버 수집 (영역 id k의 보석은 (k, diamondCols[k]))
+  const members = Array.from({ length: n }, () => []);
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) members[board.regions[r][c]].push([r, c]);
+
+  // 2) 영역에서 확정되는 보석
+  for (let k = 0; k < n; k++) {
+    const h = lone(members[k], k, board.diamondCols[k]);
+    if (h) return h;
+  }
+
+  // 3) 폴백: 아직 못 찾은 보석 중 가장 작은 영역의 것
+  let best = null, bestSize = Infinity;
+  for (let k = 0; k < n; k++) {
+    if (cells[k][board.diamondCols[k]].revealed) continue;
+    if (members[k].length < bestSize) { bestSize = members[k].length; best = [k, board.diamondCols[k]]; }
+  }
+  return best;
+}
+
+function onHint() {
+  if (locked) return;
+  if (!overlayEl.classList.contains('hidden') || !bannerEl.classList.contains('hidden')) return;
+  const hint = findHintCell();
+  if (!hint) return;
+  r3dHighlight(hint[0], hint[1]);
+  playPop(false);
+}
+
 function onMistake(r, c) {
   mistakes++;
   locked = true;
@@ -584,6 +654,8 @@ function showOverlay(title, message, btnLabel, onClick) {
 function hideOverlay() {
   overlayEl.classList.add('hidden');
 }
+
+hintBtnEl.addEventListener('click', onHint);
 
 document.getElementById('restart-btn').addEventListener('click', () => {
   if (!overlayEl.classList.contains('hidden')) return;
