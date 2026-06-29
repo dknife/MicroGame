@@ -22,7 +22,7 @@ const LID_H = 0.13;      // 뚜껑 두께
 const WALL_T = 0.08;     // 상자 벽 두께
 const SINK = 0.32;       // 오답 박스가 눌려 가라앉는 깊이
 const GEM_REST_Y = WALL_T + 0.31;     // 보석이 상자 바닥에 놓인 높이(2.6배 크기 기준)
-const GEM_RISE_Y = BASE_H + 0.35;     // 열리면 떠오르는 높이 (큰 보석이 떠 보이게)
+const GEM_RISE_Y = BASE_H + 0.7;      // 열리면 떠오르는 높이 (자유 회전해도 상자에 안 닿게 높이)
 
 let scene, camera, renderer, raycaster;
 let dirLight; // 공전하며 금속 표면에 반짝임을 만드는 기본 방향광
@@ -270,8 +270,8 @@ export function buildBoard(n, board) {
         emissiveIntensity: 0.3,
         flatShading: true,
       });
-      const pavilion = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.26, 16, 2), gemMat);
-      pavilion.rotation.x = Math.PI; // 뾰족한 끝이 아래로
+      // 파빌리온 — 잘린 원뿔: 아랫면을 짧게 절단해 작은 평평한 컬렛(culet)을 둠
+      const pavilion = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.04, 0.26, 16, 2), gemMat);
       gem.add(pavilion);
       const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.16, 0.1, 16, 1), gemMat);
       crown.position.y = 0.165 + 0.05; // 거들 띠 위에 얹기
@@ -285,7 +285,6 @@ export function buildBoard(n, board) {
         color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false,
       });
       const pavEdges = new THREE.LineSegments(new THREE.EdgesGeometry(pavilion.geometry), edgeMat);
-      pavEdges.rotation.x = Math.PI;
       gem.add(pavEdges);
       const crownEdges = new THREE.LineSegments(new THREE.EdgesGeometry(crown.geometry), edgeMat);
       crownEdges.position.y = crown.position.y;
@@ -323,6 +322,11 @@ export function buildBoard(n, board) {
       boxes[r].push({
         group, lidPivot, lid, gem, gemMat, gemLight, sparkles, wrong: false,
         markColor,
+        gemSpin: { // 자유 회전(텀블) 축 속도 — 보석마다 달라 다양한 모습
+          x: (0.3 + Math.random() * 0.8) * (Math.random() < 0.5 ? -1 : 1),
+          y: (0.4 + Math.random() * 0.9) * (Math.random() < 0.5 ? -1 : 1),
+          z: (0.3 + Math.random() * 0.8) * (Math.random() < 0.5 ? -1 : 1),
+        },
         lidT: 0, lidOpen: false, // 0=닫힘, 1=완전히 열려 옆에 눕힘
         pickParts: [lid, floor, wallBack, wallFront, wallRight, wallLeft],
         markCanvas, markCtx: markCanvas.getContext('2d'), markTex,
@@ -1028,7 +1032,9 @@ function animate() {
   const time = clock.elapsedTime;
   for (const row of boxes) for (const b of row) {
     if (!b.gem.visible) continue;
-    b.gem.rotation.y += dt * 1.4;
+    b.gem.rotation.x += b.gemSpin.x * dt; // 자유 회전 (여러 축)
+    b.gem.rotation.y += b.gemSpin.y * dt;
+    b.gem.rotation.z += b.gemSpin.z * dt;
     const pulse = 0.5 + 0.5 * Math.sin(time * 3 + b.reg); // 0~1
     b.gemMat.emissiveIntensity = 0.5 + 0.6 * pulse;
     b.gemLight.intensity = 1.4 + 1.0 * pulse; // 실제 발광
