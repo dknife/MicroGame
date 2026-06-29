@@ -274,8 +274,12 @@ export function buildBoard(n, board) {
       pavilion.rotation.x = Math.PI; // 뾰족한 끝이 아래로
       gem.add(pavilion);
       const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.16, 0.1, 16, 1), gemMat);
-      crown.position.y = 0.13 + 0.05; // 거들 위에 얹기
+      crown.position.y = 0.165 + 0.05; // 거들 띠 위에 얹기
       gem.add(crown);
+      // 거들 — 옆면에 세로 16면을 가진 깎인 띠 (옆 부분도 컷)
+      const girdle = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.07, 16, 1), gemMat);
+      girdle.position.y = 0.13;
+      gem.add(girdle);
       // 흰색 에지 — 보석 외곽선/면 모서리를 또렷하게
       const edgeMat = new THREE.LineBasicMaterial({
         color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false,
@@ -286,6 +290,9 @@ export function buildBoard(n, board) {
       const crownEdges = new THREE.LineSegments(new THREE.EdgesGeometry(crown.geometry), edgeMat);
       crownEdges.position.y = crown.position.y;
       gem.add(crownEdges);
+      const girdleEdges = new THREE.LineSegments(new THREE.EdgesGeometry(girdle.geometry), edgeMat);
+      girdleEdges.position.y = girdle.position.y;
+      gem.add(girdleEdges);
       // 보석이 실제로 빛을 내도록 점광원 — 열리면(gem.visible) 함께 켜진다
       const gemLight = new THREE.PointLight(
         color.clone().lerp(new THREE.Color(0xffffff), 0.4), 0, 2.6, 2
