@@ -33,7 +33,8 @@ let celebrating = false;  // 레벨 클리어 후 카메라 자동 선회
 // 레벨 클리어 후: 열린 보석들이 판 위로 떠올라 원형 고리를 이루고, 고리째 함께 회전한다.
 let ringActive = false, ringT = 0, ringAngle = 0, ringR = 0, ringY = 0;
 let ringGems = [];        // [{ b, base, from(Vector3), cx, cz, spot? }]
-const MAX_CAUSTICS = 6;   // 동시에 투영하는 굴절광 스포트라이트 상한 (셰이더 varying 한계 회피)
+let MAX_CAUSTICS = 6;     // 동시에 투영하는 굴절광 스포트라이트 상한. initRenderer에서 GPU의
+                          // varying 용량을 조회해 안전 범위 내 최댓값(최대 MAX_SIZE)으로 올린다.
 let celebDark = 0;        // 축하 암전 정도(0=평소, 1=보석/caustic만). 분석광·박스 반사를 끈다.
 let dimMats = [];         // [{ mat, base }] 암전 시 envMapIntensity를 낮출 박스 머티리얼들
 let paused = false;       // 포커스/가시성 상실 시 렌더 루프 정지
@@ -91,6 +92,18 @@ export function initRenderer(host, cbs) {
   canvas.style.touchAction = 'none'; // 터치 드래그가 스크롤 대신 입력이 되도록
   canvas.style.display = 'block';
 
+  // 굴절광 스포트라이트는 쿠키 맵당 셰이더 varying(vSpotLightCoord)을 1개씩 쓴다.
+  // GPU varying 용량을 조회해 베이스 varying(~10) 여유를 두고 최대 12개(=MAX_SIZE)까지 허용.
+  try {
+    const gl = renderer.getContext();
+    let vv = gl.getParameter(gl.MAX_VARYING_VECTORS);
+    if (!vv) { // 일부 WebGL2는 MAX_VARYING_COMPONENTS(=벡터×4)만 보고
+      const vc = gl.getParameter(gl.MAX_VARYING_COMPONENTS);
+      vv = vc ? Math.floor(vc / 4) : 16;
+    }
+    MAX_CAUSTICS = Math.max(4, Math.min(12, vv - 10));
+  } catch (e) { MAX_CAUSTICS = 6; }
+
   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 300);
 
   // 조명 — 박스 색이 잘 보이도록 보조광을 넉넉히
@@ -133,6 +146,15 @@ export function initRenderer(host, cbs) {
 
   paused = document.hidden;
   if (!paused) animate();
+
+  // 굴절광 쿠키 텍스처를 게임 진행 중(시작 직후 유휴 시간)에 미리 생성·GPU 업로드해 두어
+  // 레벨 클리어 순간 처음 만들 때 생기는 지연을 없앤다. 시작 자체는 막지 않도록 유휴 콜백 사용.
+  const warmCaustic = () => {
+    const tex = causticTexture();           // 캔버스 그리기(blur·프리즘 패스) 미리 수행
+    try { renderer.initTexture(tex); } catch (e) { /* GPU 업로드 미리; 실패해도 무시 */ }
+  };
+  if (window.requestIdleCallback) requestIdleCallback(warmCaustic, { timeout: 2500 });
+  else setTimeout(warmCaustic, 800);
 }
 
 function onResize() {
@@ -1249,7 +1271,7 @@ function animate() {
         rg.spot.position.set(wx, ringY, wz);
         rg.spot.target.position.set(wx, BASE_H, wz);
         const flick = 0.6 + 0.4 * Math.sin(ct * 4 + rg.cPhase);
-        rg.spot.intensity = 20 * e * flick; // 박스에 더 밝게 얹히는 굴절광 (blur로 약해진 만큼 보강)
+        rg.spot.intensity = 8 * e * flick; // 박스에 얹히는 굴절광 (기준 20의 0.4배)
         // 쿠키 회전을 보석 자전과 동기화 → 보석과 같이 빠르게 돈다
         const roll = rg.b.gem.rotation.y + rg.cPhase;
         rg.spot.shadow.camera.up.set(Math.cos(roll), 0, Math.sin(roll)); // 쿠키 회전
